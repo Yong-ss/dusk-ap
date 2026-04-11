@@ -318,23 +318,55 @@ impl Scanner for WindowsMftScanner {
 
         // ── Phase 5: Virtual Tree Stream (Folder-First) ───────────────
         let stream_start = Instant::now();
-        let base_path = format!("{}:\\", drive_letter);
+        
+        // Resolve Target Record ID from Path
+        let path_parts: Vec<&str> = path.split(|c| c == '\\' || c == '/').filter(|s| !s.is_empty()).collect();
+        let mut target_id = 5u64;
+        
+        if path_parts.len() > 1 {
+            let mut current_id = 5u64;
+            for i in 1..path_parts.len() {
+                let part = path_parts[i];
+                let mut found = false;
+                for &cid in &hierarchy[current_id as usize] {
+                    if let Some(entry) = &raw_entries[cid as usize] {
+                        if entry.name.eq_ignore_ascii_case(part) {
+                            current_id = cid;
+                            found = true;
+                            break;
+                        }
+                    }
+                }
+                if found {
+                    target_id = current_id;
+                } else {
+                    target_id = 5; // Path broken or not found, fallback to root
+                    break;
+                }
+            }
+        }
+
+        let root_name = if target_id == 5 {
+            format!("{}:\\", drive_letter)
+        } else {
+            raw_entries[target_id as usize].as_ref().unwrap().name.clone()
+        };
 
         let mut batch: Vec<FileNode> = Vec::with_capacity(BATCH_SIZE);
         let mut scanned_count = 0u64;
         let mut total_disk_size = 0u64;
 
-        // BFS traversal
-        let mut queue = vec![5u64];
+        // BFS traversal starts ONLY at the target folder
+        let mut queue = vec![target_id];
         
-        // STAGE 1: Explicitly send root
+        // STAGE 1: Explicitly send root (Mask parent_id so Frontend anchors it as Tree Root)
         tx.send(ScanChunk {
             nodes: vec![FileNode {
-                id: "5".to_string(),
-                name: base_path.clone(),
-                path: base_path.clone(),
+                id: target_id.to_string(),
+                name: root_name,
+                path: path.to_string(),
                 parent_id: None,
-                size: entry_sizes[5],
+                size: entry_sizes[target_id as usize],
                 kind: NodeKind::Dir,
                 extension: None,
                 children: None,
@@ -343,7 +375,7 @@ impl Scanner for WindowsMftScanner {
             progress: ScanProgress {
                 scanned: 1,
                 total_size: 0,
-                current_path: base_path.clone(),
+                current_path: path.to_string(),
                 done: false,
                 total_records: Some(total_records),
                 processed_records: Some(total_records),
