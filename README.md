@@ -1,142 +1,76 @@
-# Dusk
+# 🌌 Dusk 
 
-A cross-platform disk space visualizer built with Tauri v2, React, TypeScript, and Rust.
+**Blazing Fast. Beautifully Visual. Deeply Insightful.**
 
-Dusk is designed to feel like a modern desktop-native answer to tools such as WizTree and SpaceSniffer: fast startup, progressive rendering, renderer fallback by hardware tier, and a UI that stays smooth even when the filesystem does not.
+Dusk is a high-performance disk space visualizer built for the modern era. Leveraging **Tauri v2**, **Rust**, and **React 19**, it provides a desktop-native experience that makes billions of bytes instantly understandable through interactive treemaps.
 
-## Status
+## ⚡ Key Features
 
-Current milestone: `Phase 1` complete.
+- **MFT Fast Scan**: Harnesses the Windows Master File Table for near-instant indexing of millions of files.
+- **Hybrid Rendering Engine**: Automatically selects the best rendering tier for your hardware (WebGL via PixiJS → Canvas2D → SVG).
+- **Responsive Shell**: A sleek, dark-themed UI built with Tailwind CSS and Framer Motion.
+- **Adaptive Throttling**: Intelligent data processing that stays fluid even when scanning massive directories.
+- **Deep Drill-down**: Navigate through your filesystem breadcrumbs with smooth animations and instant filtering.
 
-Implemented right now:
-- Tauri v2 + React + TypeScript + Vite project scaffold
-- Tailwind CSS setup with class-based dark mode
-- Desktop shell layout for the Dusk app
-- Collapsible left sidebar
-- Top toolbar with placeholder breadcrumb and scan action
-- Main visualization surface placeholder
-- Bottom status bar placeholder
-- Theme provider with system preference detection and manual toggle
-- Basic smoke test with Vitest
+## 🚀 Status: Phase 2 Optimized
 
-Not implemented yet:
-- Real filesystem scanning
-- Platform abstraction layer
-- Treemap layout algorithm
-- PixiJS / Canvas / SVG renderer tiers
-- Search, filtering, drill-down, tooltip, and context menu
+Current Accomplishments:
+- [x] **Rust-Native MFT Scanner**: Sector-aligned raw disk access.
+- [x] **WebGL Treemap**: 60fps interaction on large datasets.
+- [x] **Smart Fallback**: Automatically switches to `WalkDir` when admin rights aren't available.
+- [x] **Diagnostic Console**: Real-time event monitoring for power users.
 
-## Tech Stack
+## 🛠 Tech Stack
 
-- Frontend: React 19 + TypeScript + Vite
-- Desktop shell: Tauri v2
-- Styling: Tailwind CSS
-- Motion: Framer Motion
-- Rendering foundation: PixiJS
-- Backend engine: Rust
-- Testing: Vitest + Testing Library
+| Core | UI/UX | Backend |
+| :--- | :--- | :--- |
+| **Tauri v2** (Shell) | **React 19** + **TS** | **Rust** (Engine) |
+| **Vite** (Bundler) | **Tailwind CSS** | **ntfs** (MFT Parsing) |
+| **PixiJS** (Renderer) | **Framer Motion** | **tokio** (Async) |
 
-## Why Dusk
-
-- Cross-platform target: Windows, macOS, Linux
-- Native desktop packaging through Tauri
-- Rust-based filesystem engine for speed and control
-- Renderer downgrade path for weaker hardware
-- Architecture designed for streaming, incremental updates instead of blocking full scans
-- Graceful fallback behavior instead of crashing on permission issues
-
-## Development
+## 📦 Getting Started
 
 ### Prerequisites
+- [Node.js](https://nodejs.org/) (v20+)
+- [Rust Toolchain](https://www.rust-lang.org/tools/install)
+- [Tauri v2 Prerequisites](https://v2.tauri.app/start/prerequisites/)
 
-Make sure these are installed:
-- Node.js 20+
-- Rust toolchain
-- Tauri v2 prerequisites for your OS
-
-Windows users should also have the normal Tauri desktop prerequisites available.
-
-### Install
-
+### Installation
 ```bash
 npm install
 ```
 
-### Run the frontend only
-
+### Development
 ```bash
-npm run dev
-```
-
-Frontend dev server:
-- `http://localhost:1420`
-
-### Run the desktop app
-
-```bash
+# Run the Desktop App
 npm run tauri dev
-```
 
-### Build
-
-```bash
-npm run build
-```
-
-### Test
-
-```bash
+# Run Vitest Suite
 npm run test:run
 ```
 
-## Project Structure
+## 🏗 Project Structure
 
 ```text
-Dusk/
-├── src/                 # React UI shell
-├── src-tauri/           # Rust + Tauri backend
-├── public/              # Static assets
-├── package.json
-├── tailwind.config.ts
-├── vite.config.ts
-└── README.md
+dusk/
+├── src/                # Modern React UI
+│   ├── renderer/       # Hardware-aware drawing logic
+│   ├── hooks/          # Scanning & State orchestration
+│   └── components/     # Atomic UI units
+├── src-tauri/          # High-performance Rust backend
+│   └── src/platform/   # OS-specific scanning logic (MFT/Unix)
+└── manual_testing/     # Interactive QA checklists
 ```
 
-## GitHub Notes
+## 🗺 Roadmap
 
-Recommended to commit:
-- `src/`
-- `src-tauri/src/`
-- `src-tauri/Cargo.toml`
-- `src-tauri/Cargo.lock`
-- `src-tauri/tauri.conf.json`
-- `public/`
-- `package.json`
-- `package-lock.json`
-- `.gitignore`
-- `README.md`
+1. [x] Core Shell & UI Foundation
+2. [x] Hardware-Tiered Renderer (WebGL/Canvas/SVG)
+3. [x] Windows MFT Fast-Scan Implementation
+4. [/] **Large Scan Optimization** - *Currently eliminating UI jank*
+5. [ ] Global File Search & Metadata Indexing
+6. [ ] Context Menu File Actions (Delete, Reveal in Explorer)
+7. [ ] Production-grade Packaging & Release
 
-Recommended to keep out of Git:
-- `node_modules/`
-- `dist/`
-- `src-tauri/target/`
-- `src-tauri/gen/`
-- local `.env` files
-- temporary workspace folders
-
-## Roadmap
-
-Planned phases after the current shell:
-1. Rust scanning engine with platform abstraction
-2. Tiered renderer detection and fallback
-3. Squarified treemap layout
-4. Real scan data rendering and interaction
-5. Search and filter system
-6. UI polish, animation, and settings
-7. Windows MFT fast-path optimization
-8. Packaging and release automation
-
-## Vision
-
-Dusk is not trying to be just another file tree viewer.
-It aims to be a hardware-aware disk map that opens fast, renders progressively, and makes huge directories feel instantly understandable.
+---
+*Built with ❤️ for those who hate missing disk space.*
