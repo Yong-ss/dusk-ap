@@ -241,3 +241,62 @@ describe("minBlockSize filtering", () => {
     expect(rects).toHaveLength(0);
   });
 });
+
+// ── Suite 2 Missing Tests ────────────────────────────────────────────────────
+
+describe("Suite 2: Performance and Edge Cases", () => {
+  it("T1. Large tree performance (10,000 nodes)", () => {
+    const children: FileNode[] = Array.from({ length: 10000 }, (_, i) => file(`f${i}`, 1000));
+    const root = dir("perf", 10000 * 1000, children);
+    
+    const start = performance.now();
+    const rects = computeTreemap(root, { x: 0, y: 0, width: 1024, height: 768 }, OPTS);
+    const end = performance.now();
+    
+    expect(rects.length).toBeGreaterThan(0);
+    expect(end - start).toBeLessThan(500); // Target < 500ms
+  });
+
+  it("T2. Zero-size files handling", () => {
+    const root = dir("root", 1000, [
+      file("zero", 0),
+      file("normal", 1000),
+    ]);
+    // Should not crash. Currently treemap.ts filters size=0 or returns early?
+    // Let's verify it handles them gracefully.
+    const rects = computeTreemap(root, SQUARE, OPTS);
+    expect(rects.map(r => r.id)).toContain("normal");
+    // Depending on implementation, zero might be filtered or kept with min size.
+    // Based on existing tests, it seems they are filtered.
+  });
+
+  it("T3. Single massive file (>80% of parent)", () => {
+    const root = dir("mass", 1000, [
+      file("huge", 900),
+      file("tiny", 100),
+    ]);
+    const rects = computeTreemap(root, SQUARE, OPTS);
+    const huge = rects.find(r => r.id === "huge")!;
+    const tiny = rects.find(r => r.id === "tiny")!;
+    
+    // Huge should take most of the space
+    expect(huge.width * huge.height).toBeGreaterThan(tiny.width * tiny.height * 5);
+    // Aspect ratio check (squarified should keep it sane)
+    const ratio = Math.max(huge.width / huge.height, huge.height / huge.width);
+    expect(ratio).toBeLessThan(5);
+  });
+
+  it("T5. Bounds precision", () => {
+    const children = Array.from({ length: 50 }, (_, i) => file(`f${i}`, Math.random() * 1000));
+    const root = dir("precision", 50000, children);
+    const bounds = { x: 10, y: 20, width: 500, height: 400 };
+    const rects = computeTreemap(root, bounds, OPTS);
+    
+    for (const r of rects) {
+      expect(r.x).toBeGreaterThanOrEqual(bounds.x);
+      expect(r.y).toBeGreaterThanOrEqual(bounds.y);
+      expect(r.x + r.width).toBeLessThanOrEqual(bounds.x + bounds.width + 0.001); // Float precision
+      expect(r.y + r.height).toBeLessThanOrEqual(bounds.y + bounds.height + 0.001);
+    }
+  });
+});

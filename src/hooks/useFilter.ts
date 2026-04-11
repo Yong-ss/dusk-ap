@@ -1,9 +1,9 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, type Dispatch, type SetStateAction } from "react";
 import type { TreeFilters } from "../lib/filter";
 
 export interface UseFilterReturn {
   filters: TreeFilters;
-  setFilters: React.Dispatch<React.SetStateAction<TreeFilters>>;
+  setFilters: Dispatch<SetStateAction<TreeFilters>>;
   clearFilters: () => void;
   activeCount: number;
 }

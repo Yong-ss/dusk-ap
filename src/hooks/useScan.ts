@@ -12,12 +12,15 @@ export interface UseScanReturn {
   isScanning: boolean;
   error: string | null;
   method: "mft" | "walkdir" | null;
+  eventLog: Array<{ type: string; timestamp: number; payload: any }>;
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-/** Throttle interval for React state updates (ms). */
-const THROTTLE_MS = 300;
+/** Initial throttle interval for React state updates (ms). */
+const INITIAL_THROTTLE_MS = 300;
+/** Maximum throttle interval for massive scans (ms). */
+const MAX_THROTTLE_MS = 2500;
 
 // ── Hook ──────────────────────────────────────────────────────────────────────
 
@@ -35,6 +38,7 @@ export function useScan(): UseScanReturn {
   const [isScanning, setIsScanning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [method, setMethod] = useState<"mft" | "walkdir" | null>(null);
+  const [eventLog, setEventLog] = useState<Array<{ type: string; timestamp: number; payload: any }>>([]);
 
   // Flat accumulation buffer — never triggers renders.
   const nodeBuffer = useRef<Map<string, FileNode>>(new Map());
@@ -64,8 +68,11 @@ export function useScan(): UseScanReturn {
     if (nodes.length === 0) {
       setTree(null);
     } else {
-      // 1. Sort nodes by path length, shortest first. This ensures parents are created before children.
-      nodes.sort((a, b) => a.path.length - b.path.length);
+      // Optimization: Only sort if the list is reasonably small. 
+      // For massive scans, we rely on the backend order (mostly DFS) and child lookup.
+      if (nodes.length < 50000) {
+        nodes.sort((a, b) => a.path.length - b.path.length);
+      }
 
       // 2. Build map of path -> FileNode representing the tree properly.
       const treeMap = new Map<string, FileNode>();
@@ -132,10 +139,16 @@ export function useScan(): UseScanReturn {
   const scheduleFlush = useCallback(
     (latestProgress: ScanProgress) => {
       if (throttleTimer.current !== null) return; // already scheduled
+      
+      // Adaptive throttling: the more files, the slower the refresh to keep UI alive
+      const count = nodeBuffer.current.size;
+      const throttle = count > 100000 ? MAX_THROTTLE_MS : 
+                      count > 25000 ? 1000 : INITIAL_THROTTLE_MS;
+
       throttleTimer.current = setTimeout(() => {
         throttleTimer.current = null;
         flushTree(latestProgress);
-      }, THROTTLE_MS);
+      }, throttle);
     },
     [flushTree],
   );
@@ -156,10 +169,18 @@ export function useScan(): UseScanReturn {
       setError(null);
       setIsScanning(true);
       setMethod(null);
+      setEventLog([{ type: "START_REQUEST", timestamp: Date.now(), payload: { path } }]);
 
       // Subscribe before invoking to avoid missing early chunks.
       unlistenChunk.current = await listen<ScanChunk>("scan_chunk", (event) => {
+        setIsScanning(true);
         const { nodes, progress: prog } = event.payload;
+
+        setEventLog(prev => [{ 
+          type: "CHUNK", 
+          timestamp: Date.now(), 
+          payload: { nodes: nodes.length, records: prog.processedRecords, done: prog.done } 
+        }, ...prev].slice(0, 50));
 
         // Accumulate into the buffer (useRef → no re-render).
         for (const node of nodes) {
@@ -182,12 +203,14 @@ export function useScan(): UseScanReturn {
 
       unlistenError.current = await listen<string>("scan_error", (event) => {
         setError(event.payload);
+        setEventLog(prev => [{ type: "ERROR", timestamp: Date.now(), payload: event.payload }, ...prev].slice(0, 50));
         setIsScanning(false);
         cleanupListeners();
       });
 
       unlistenStart.current = await listen<{ method: "mft" | "walkdir" }>("scan_start", (event) => {
         setMethod(event.payload.method);
+        setEventLog(prev => [{ type: "SCAN_START_ACK", timestamp: Date.now(), payload: event.payload }, ...prev].slice(0, 50));
         // If this is a fallback restart, clear partial data
         nodeBuffer.current.clear();
         setTree(null);
@@ -222,5 +245,5 @@ export function useScan(): UseScanReturn {
     cleanupListeners();
   }, [cleanupListeners]);
 
-  return { startScan, cancelScan, tree, progress, isScanning, error, method };
+  return { startScan, cancelScan, tree, progress, isScanning, error, method, eventLog };
 }

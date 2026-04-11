@@ -139,6 +139,8 @@ impl Scanner for UniversalScanner {
                         total_size,
                         current_path: current_path.clone(),
                         done: false,
+                        total_records: None,
+                        processed_records: None,
                     },
                 };
                 // If the receiver dropped (window closed), stop gracefully.
@@ -157,6 +159,8 @@ impl Scanner for UniversalScanner {
                 total_size,
                 current_path,
                 done: true,
+                total_records: None,
+                processed_records: None,
             },
         });
 

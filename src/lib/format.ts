@@ -8,9 +8,9 @@ export function formatBytes(bytes: number): string {
   const k = 1024;
   const sizes = ["B", "KB", "MB", "GB", "TB"];
   const i = Math.floor(Math.log(bytes) / Math.log(k));
-  // Keep 2 decimal places for anything MB or larger.
+  // Keep 2 decimal places for anything KB or larger.
   const val = bytes / Math.pow(k, i);
-  return `${i >= 2 ? val.toFixed(2) : Math.round(val)} ${sizes[i]}`;
+  return `${i >= 1 ? val.toFixed(2) : val} ${sizes[i]}`;
 }
 
 /** Formats an integer with thousands separators. */
@@ -42,4 +42,15 @@ export function getParentPath(path: string): string {
   if (parent.endsWith(":")) return parent + "\\";
   if (parent === "") return "/";
   return parent;
+}
+
+/** Truncates a long path with a middle ellipsis. */
+export function truncatePath(path: string, maxLength: number): string {
+  if (path.length <= maxLength) return path;
+  
+  const charsToShow = maxLength - 3;
+  const frontChars = Math.ceil(charsToShow / 2);
+  const backChars = Math.floor(charsToShow / 2);
+  
+  return path.substring(0, frontChars) + "..." + path.substring(path.length - backChars);
 }

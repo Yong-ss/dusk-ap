@@ -1,4 +1,4 @@
-#![cfg(windows)]
+// #![cfg(windows)] removed redundant attribute
 
 use std::{
     collections::{HashMap, hash_map::DefaultHasher},
@@ -140,7 +140,7 @@ impl Scanner for WindowsMftScanner {
                 FILE_FLAG_BACKUP_SEMANTICS,
                 None,
             )
-        }.map_err(|e| ScanError::Io(io::Error::new(io::ErrorKind::Other, e.to_string())))?;
+        }.map_err(|e| ScanError::Io(io::Error::other(e.to_string())))?;
 
         if handle.is_invalid() || handle.0 == INVALID_HANDLE_VALUE.0 {
             return Err(ScanError::Permission(format!("Failed to open volume {}. Run as administrator.", vol_path)));
@@ -173,8 +173,22 @@ impl Scanner for WindowsMftScanner {
         let mut flat_entries: HashMap<u64, MftEntry> = HashMap::with_capacity(total_records as usize / 2);
         
         for i in 0..total_records {
-            if i % 5000 == 0 && cancel.load(Ordering::Relaxed) {
-                return Err(ScanError::Cancelled);
+            if i % 10000 == 0 {
+                if cancel.load(Ordering::Relaxed) {
+                    return Err(ScanError::Cancelled);
+                }
+                // Heartbeat during phase 1 (Indexing)
+                tx.send(ScanChunk {
+                    nodes: vec![],
+                    progress: ScanProgress {
+                        scanned: 0,
+                        total_size: 0,
+                        current_path: format!("Indexing records: {} / {}", i, total_records),
+                        done: false,
+                        total_records: Some(total_records),
+                        processed_records: Some(i),
+                    },
+                }).ok();
             }
 
             let file = match ntfs.file(&mut reader, i) {
@@ -187,13 +201,11 @@ impl Scanner for WindowsMftScanner {
             }
 
             let mut is_reparse = false;
-            for attr in file.attributes_raw() {
-                if let Ok(a) = attr {
-                    if let Ok(ty) = a.ty() {
-                         if ty == ntfs::NtfsAttributeType::ReparsePoint {
-                             is_reparse = true;
-                             break;
-                         }
+            for a in file.attributes_raw().flatten() {
+                if let Ok(ty) = a.ty() {
+                    if ty == ntfs::NtfsAttributeType::ReparsePoint {
+                        is_reparse = true;
+                        break;
                     }
                 }
             }
@@ -292,6 +304,8 @@ impl Scanner for WindowsMftScanner {
                                 total_size: current_total_size,
                                 current_path: full_path,
                                 done: false,
+                                total_records: Some(total_records),
+                                processed_records: Some(total_records), // Done with record processing
                             },
                         }).ok();
                     }
@@ -307,6 +321,8 @@ impl Scanner for WindowsMftScanner {
                 total_size: current_total_size,
                 current_path: path.to_string(),
                 done: true,
+                total_records: Some(total_records),
+                processed_records: Some(total_records),
             },
         }).ok();
 
@@ -318,4 +334,33 @@ fn hash_path(path: &str) -> String {
     let mut h = DefaultHasher::new();
     path.hash(&mut h);
     format!("{:16x}", h.finish())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn test_sector_aligned_reader() {
+        let data: Vec<u8> = (0..8192).map(|i| (i % 256) as u8).collect();
+        let cursor = Cursor::new(data.clone());
+        let mut reader = SectorAlignedReader::new(cursor, 512);
+
+        // Test sequential read
+        let mut buf = vec![0u8; 100];
+        reader.read_exact(&mut buf).unwrap();
+        assert_eq!(buf, &data[0..100]);
+
+        // Test read across sector boundary
+        let mut buf = vec![0u8; 1000];
+        reader.read_exact(&mut buf).unwrap();
+        assert_eq!(buf, &data[100..1100]);
+
+        // Test seek and read
+        reader.seek(SeekFrom::Start(4000)).unwrap();
+        let mut buf = vec![0u8; 100];
+        reader.read_exact(&mut buf).unwrap();
+        assert_eq!(buf, &data[4000..4100]);
+    }
 }

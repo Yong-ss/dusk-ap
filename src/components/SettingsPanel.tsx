@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, type Dispatch, type SetStateAction } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import type { Settings } from "../hooks/useSettings";
 
@@ -6,7 +6,7 @@ interface SettingsPanelProps {
   isOpen: boolean;
   onClose: () => void;
   settings: Settings;
-  setSettings: React.Dispatch<React.SetStateAction<Settings>>;
+  setSettings: Dispatch<SetStateAction<Settings>>;
 }
 
 export default function SettingsPanel({ isOpen, onClose, settings, setSettings }: SettingsPanelProps) {

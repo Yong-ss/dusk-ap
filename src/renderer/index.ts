@@ -46,17 +46,27 @@ function measureFps(renderer: Renderer, rects: TreemapRect[]): Promise<number> {
   return new Promise((resolve) => {
     let frames = 0;
     const start = performance.now();
+    let timeoutId: number;
 
     const tick = (): void => {
       renderer.drawRects(rects);
       frames++;
-      if (performance.now() - start < BENCH_DURATION_MS) {
+      const now = performance.now();
+      if (now - start < BENCH_DURATION_MS) {
         requestAnimationFrame(tick);
       } else {
+        window.clearTimeout(timeoutId);
         renderer.clear();
-        resolve((frames / (performance.now() - start)) * 1_000);
+        resolve((frames / (now - start)) * 1_000);
       }
     };
+
+    // Safety timeout: if requestAnimationFrame never fires (e.g. backgrounded), 
+    // resolve with 0 so we fall back quickly.
+    timeoutId = window.setTimeout(() => {
+      console.warn("[dusk/renderer] Benchmark timed out after 1000ms. Falling back.");
+      resolve(0);
+    }, 1000);
 
     requestAnimationFrame(tick);
   });
@@ -71,6 +81,9 @@ function measureFps(renderer: Renderer, rects: TreemapRect[]): Promise<number> {
 export async function createRenderer(
   container: HTMLElement,
 ): Promise<{ renderer: Renderer; tier: RendererTier }> {
+  console.group("Dusk Renderer Init");
+  const startTime = performance.now();
+  
   const w = container.clientWidth || 800;
   const h = container.clientHeight || 600;
   const benchRects = makeBenchRects(w, h);
@@ -133,6 +146,7 @@ export async function createRenderer(
 
   // ── Tier 3: SVG (always succeeds) ────────────────────────────────────────
   console.info("[dusk/renderer] Using SVG fallback");
+  console.groupEnd();
   return { renderer: new SVGRenderer(container), tier: "svg" };
 }
 

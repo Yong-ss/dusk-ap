@@ -39,3 +39,6 @@ src-tauri/gen/schemas
 diskmap-master-plan.md
 AGENT_HANDOFF.md
 dusk-testing-plan.md
+test_fix_log.md
+test-report.md
+manual_testing_checklist.md

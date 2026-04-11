@@ -45,11 +45,16 @@ pub enum NodeKind {
 // ── Scan progress ────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ScanProgress {
     pub scanned: u64,
     pub total_size: u64,
     pub current_path: String,
     pub done: bool,
+    /// Total MFT records or file count estimate if available
+    pub total_records: Option<u64>,
+    /// Percentage indicator for Phase 1 (indexing)
+    pub processed_records: Option<u64>,
 }
 
 // ── Streaming chunk emitted as a Tauri event ─────────────────────────────────

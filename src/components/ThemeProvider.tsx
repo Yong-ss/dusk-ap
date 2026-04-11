@@ -2,6 +2,7 @@ import {
   createContext,
   type PropsWithChildren,
   useContext,
+  useCallback,
   useEffect,
   useMemo,
   useState,
@@ -53,9 +54,7 @@ export function ThemeProvider({ children }: PropsWithChildren) {
       setSystemTheme(event.matches ? "dark" : "light");
     };
 
-    setSystemTheme(mediaQuery.matches ? "dark" : "light");
     mediaQuery.addEventListener("change", handleChange);
-
     return () => mediaQuery.removeEventListener("change", handleChange);
   }, []);
 
@@ -69,16 +68,18 @@ export function ThemeProvider({ children }: PropsWithChildren) {
     root.style.colorScheme = resolvedTheme;
   }, [resolvedTheme]);
 
-  const setThemeMode = (value: ThemeMode) => {
+  const setThemeMode = useCallback((value: ThemeMode) => {
     setThemeModeState(value);
     window.localStorage.setItem(STORAGE_KEY, value);
-  };
+  }, []);
 
-  const cycleTheme = () => {
-    const nextTheme =
-      themeMode === "system" ? "dark" : themeMode === "dark" ? "light" : "system";
-    setThemeMode(nextTheme);
-  };
+  const cycleTheme = useCallback(() => {
+    setThemeModeState((prev) => {
+      const next = prev === "system" ? "dark" : prev === "dark" ? "light" : "system";
+      window.localStorage.setItem(STORAGE_KEY, next);
+      return next;
+    });
+  }, []);
 
   const value = useMemo<ThemeContextValue>(
     () => ({
@@ -87,7 +88,7 @@ export function ThemeProvider({ children }: PropsWithChildren) {
       setThemeMode,
       cycleTheme,
     }),
-    [resolvedTheme, themeMode],
+    [resolvedTheme, themeMode, setThemeMode, cycleTheme],
   );
 
   return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;

@@ -21,6 +21,8 @@ export interface ScanProgress {
   total_size: number;
   current_path: string;
   done: boolean;
+  totalRecords?: number;
+  processedRecords?: number;
 }
 
 // ── Streaming chunk received from Tauri event ─────────────────────────────────

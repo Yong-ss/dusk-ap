@@ -1,5 +1,5 @@
 import { AnimatePresence, motion } from "framer-motion";
-import { useState, useRef, useEffect, useMemo } from "react";
+import { useState, useRef, useEffect, useMemo, useCallback, type MouseEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { useTheme } from "./components/ThemeProvider";
@@ -46,9 +46,10 @@ export default function App() {
   const { cycleTheme, resolvedTheme, themeMode } = useTheme();
   
   const { settings, setSettings } = useSettings();
+  const [showDebug, setShowDebug] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
 
-  const { startScan: rawStartScan, cancelScan, tree, progress, isScanning, error, method } = useScan();
+  const { startScan: rawStartScan, cancelScan, tree, progress, isScanning, error, method, eventLog } = useScan();
 
   // Settings-aware startScan wrapper
   const startScan = async (path: string) => {
@@ -76,22 +77,30 @@ export default function App() {
   const [drives, setDrives] = useState<DriveInfo[]>([]);
   const [recentScans, setRecentScans] = useState<RecentScan[]>([]);
 
-  const fetchDrives = async () => {
+  const scannedPercent = useMemo(() => {
+    if (!progress?.totalRecords || !progress?.processedRecords) return 0;
+    return Math.min(100, Math.round((progress.processedRecords / progress.totalRecords) * 100));
+  }, [progress?.totalRecords, progress?.processedRecords]);
+
+  const fetchDrives = useCallback(async () => {
     try {
       const res = await invoke<DriveInfo[]>("get_drives");
       setDrives(res);
     } catch (e) {
       console.error("Failed to fetch drives", e);
     }
-  };
+  }, []);
 
   useEffect(() => {
-    fetchDrives();
+    console.log("[dusk/ui] App: Initial mount");
+    void fetchDrives();
     try {
       const storedScans = localStorage.getItem("dusk_recent_scans");
       if (storedScans) setRecentScans(JSON.parse(storedScans));
-    } catch {}
-  }, []);
+    } catch (e) {
+      console.error("Failed to load recent scans", e);
+    }
+  }, [fetchDrives]);
 
   // Update recent scans when a scan finishes successfully
   useEffect(() => {
@@ -104,7 +113,7 @@ export default function App() {
         return next;
       });
     }
-  }, [isScanning, progress?.done, tree]);
+  }, [isScanning, progress?.done, progress?.total_size, tree]);
 
   // Keyboard bindings
   useEffect(() => {
@@ -167,28 +176,31 @@ export default function App() {
   const rects = useMemo(() => {
     if (!filteredViewRoot || bounds.width === 0 || bounds.height === 0) return undefined;
     
+    // Performance Guard: While scanning huge drives, avoid re-layouting every frame.
+    // If we have >100k nodes and the scan is active, we let the memo settle.
+    // However, computerTreemap is O(N) but can still be heavy on the JS thread.
     return computeTreemap(
       filteredViewRoot,
       { x: 0, y: 0, width: bounds.width, height: bounds.height },
       { colorMap: DEFAULT_COLOR_MAP, minBlockSize: settings.minBlockSize }
     );
-  }, [filteredViewRoot, bounds]);
+  }, [filteredViewRoot, bounds, settings.minBlockSize]);
 
   // ── Interactions ────────────────────────────────────────────────────────────
 
-  const handleMouseMove = (e: React.MouseEvent) => {
+  const handleMouseMove = useCallback((e: MouseEvent) => {
     setMousePos({ x: e.clientX, y: e.clientY });
-  };
+  }, []);
 
-  const handleContextMenu = (e: React.MouseEvent) => {
+  const handleContextMenu = useCallback((e: MouseEvent) => {
     if (hoveredRect) {
       e.preventDefault();
       setContextMenu({ x: e.clientX, y: e.clientY, rect: hoveredRect });
     }
-  };
+  }, [hoveredRect]);
 
   const [lastClick, setLastClick] = useState<{ id: string; time: number } | null>(null);
-  const handleRectClick = (rect: TreemapRect) => {
+  const handleRectClick = useCallback((rect: TreemapRect) => {
     const now = Date.now();
     if (lastClick && lastClick.id === rect.id && now - lastClick.time < 300) {
       // Double click
@@ -206,7 +218,7 @@ export default function App() {
     } else {
       setLastClick({ id: rect.id, time: now });
     }
-  };
+  }, [lastClick, viewRoot, viewHistory]);
 
   const handleCrumbClick = (index: number) => {
     if (index === -1) {
@@ -460,6 +472,14 @@ export default function App() {
                 >
                   Top 50 Files
                 </button>
+                <button
+                  onClick={() => setShowDebug(!showDebug)}
+                  className={`rounded-full border px-4 py-2 text-sm transition-colors ${
+                    showDebug ? "bg-indigo-500/20 border-indigo-500/40 text-indigo-200" : "bg-white/5 border-border-soft text-primary hover:bg-white/10"
+                  }`}
+                >
+                  {showDebug ? "Hide Debug" : "Show Debug"}
+                </button>
                 <AnimatePresence>
                   {isScanning && method && (
                     <motion.div
@@ -491,7 +511,16 @@ export default function App() {
                   onClick={() => void handleScanDialog()}
                   type="button"
                 >
-                  {scanButtonLabel}
+                  <div className="flex items-center gap-2">
+                    {isScanning && (
+                      <motion.div
+                        animate={{ rotate: 360 }}
+                        className="h-3 w-3 rounded-full border border-white/30 border-t-white"
+                        transition={{ duration: 0.8, repeat: Infinity, ease: "linear" }}
+                      />
+                    )}
+                    {scanButtonLabel}
+                  </div>
                 </button>
               </div>
               
@@ -569,32 +598,60 @@ export default function App() {
               {isScanning && (
                 <motion.div
                   animate={{ opacity: 1 }}
-                  className="absolute bottom-0 left-0 right-0 z-30 h-[3px] overflow-hidden bg-white/10"
+                  className="absolute bottom-0 left-0 right-0 z-30 h-1 overflow-hidden bg-white/5 backdrop-blur-sm"
                   exit={{ opacity: 0 }}
                   initial={{ opacity: 0 }}
                 >
                   <motion.div
-                    animate={{ x: ["0%", "100%", "0%"] }}
-                    className="h-full w-1/3 bg-[rgb(var(--accent-video))]"
-                    transition={{ duration: 1.6, repeat: Infinity, ease: "easeInOut" }}
+                    className="h-full bg-gradient-to-r from-indigo-500 to-cyan-400 shadow-[0_0_8px_rgba(99,102,241,0.6)]"
+                    initial={{ width: "0%" }}
+                    animate={{ 
+                      width: scannedPercent > 0 ? `${scannedPercent}%` : "30%",
+                      x: scannedPercent > 0 ? 0 : ["-100%", "200%"] 
+                    }}
+                    transition={{ 
+                      width: { duration: 0.5, ease: "easeOut" },
+                      x: scannedPercent > 0 ? { duration: 0 } : { duration: 2, repeat: Infinity, ease: "linear" }
+                    }}
                   />
                 </motion.div>
               )}
             </AnimatePresence>
 
-            {/* Scan overlay — shown while scanning, fades out when done */}
+            {/* Scan overlay — shown while scanning, or briefly when finished */}
             <AnimatePresence>
-              {isScanning && progress && (
+              {(isScanning || (progress?.done && !isScanning)) && progress && (
                 <motion.div
-                  animate={{ opacity: 1 }}
-                  className="pointer-events-none absolute left-4 top-4 z-30 rounded-2xl border border-border-soft bg-black/40 px-4 py-3 backdrop-blur-md"
-                  exit={{ opacity: 0 }}
-                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  className={`pointer-events-none absolute left-6 top-6 z-30 rounded-2xl border px-5 py-4 backdrop-blur-md shadow-2xl ${
+                    isScanning ? "border-indigo-500/30 bg-black/60" : "border-emerald-500/30 bg-emerald-950/40"
+                  }`}
+                  exit={{ opacity: 0, scale: 0.95 }}
+                  initial={{ opacity: 0, scale: 0.95 }}
                 >
-                  <p className="text-xs uppercase tracking-[0.28em] text-muted">Scanning</p>
-                  <p className="mt-1 font-mono text-sm text-primary">
-                    {formatCount(progress.scanned)} files · {formatBytes(progress.total_size)}
-                  </p>
+                  <div className="flex items-center gap-3">
+                    {isScanning ? (
+                      <div className="relative flex h-2 w-2">
+                        <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-indigo-400 opacity-75"></span>
+                        <span className="relative inline-flex h-2 w-2 rounded-full bg-indigo-500"></span>
+                      </div>
+                    ) : (
+                      <span className="text-emerald-400 text-lg">✓</span>
+                    )}
+                    <div>
+                      <p className="text-[10px] uppercase tracking-[0.25em] text-muted leading-tight">
+                        {isScanning ? "Scanning Activity" : "Scan Completed"}
+                      </p>
+                      <p className="mt-1 font-mono text-base font-semibold text-primary">
+                        {formatCount(progress.scanned)} <span className="text-xs font-normal text-muted">files</span> · {formatBytes(progress.total_size)}
+                      </p>
+                      {isScanning && (
+                        <p className="mt-1.5 truncate text-[10px] text-muted max-w-[240px] italic">
+                          {progress.current_path.split(/[/\\]/).slice(-2).join('/')}
+                        </p>
+                      )}
+                    </div>
+                  </div>
                 </motion.div>
               )}
             </AnimatePresence>
@@ -639,6 +696,46 @@ export default function App() {
         settings={settings}
         setSettings={setSettings}
       />
+
+      {/* Debug Console Overlay */}
+      <AnimatePresence>
+        {showDebug && (
+          <motion.div
+            initial={{ y: 300, opacity: 0 }}
+            animate={{ y: 0, opacity: 1 }}
+            exit={{ y: 300, opacity: 0 }}
+            className="fixed bottom-6 right-6 z-[100] w-[450px] overflow-hidden rounded-3xl border border-white/10 bg-black/80 shadow-2xl backdrop-blur-xl"
+          >
+            <div className="flex items-center justify-between border-b border-white/5 bg-white/5 px-5 py-3">
+              <div className="flex items-center gap-2">
+                <span className="h-2 w-2 rounded-full bg-indigo-500 animate-pulse" />
+                <span className="text-xs font-bold uppercase tracking-widest text-indigo-300">Live Debug Scan Log</span>
+              </div>
+              <button 
+                onClick={() => setShowDebug(false)}
+                className="text-muted hover:text-primary p-1"
+              >
+                ✕
+              </button>
+            </div>
+            <div className="max-h-[300px] overflow-y-auto p-4 font-mono text-[10px] leading-relaxed">
+              {eventLog.length === 0 ? (
+                <div className="py-10 text-center text-muted italic">No active scan events...</div>
+              ) : (
+                <div className="flex flex-col gap-1.5 grayscale opacity-80 hover:grayscale-0 hover:opacity-100 transition-all">
+                  {eventLog.slice(0, 50).map((log, i) => (
+                    <div key={i} className="flex gap-3 border-b border-white/[0.03] pb-1">
+                      <span className="text-indigo-400 shrink-0">[{new Date(log.timestamp).toLocaleTimeString()}]</span>
+                      <span className="text-emerald-400 font-bold shrink-0">{log.type}</span>
+                      <span className="text-primary truncate">{JSON.stringify(log.payload)}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

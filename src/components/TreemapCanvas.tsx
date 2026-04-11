@@ -89,7 +89,9 @@ export default function TreemapCanvas({ rects, onHover, onClick }: TreemapCanvas
 
     let alive = true;
 
+    console.log("[dusk/ui] TreemapCanvas: Initializing renderer...");
     createRenderer(container).then(({ renderer, tier: t }) => {
+      console.log(`[dusk/ui] TreemapCanvas: Renderer ready (tier: ${t})`);
       if (!alive) {
         renderer.destroy();
         return;
@@ -108,6 +110,9 @@ export default function TreemapCanvas({ rects, onHover, onClick }: TreemapCanvas
       const { width, height } = container.getBoundingClientRect();
       const initial = rects ?? makeRandomRects(500, width, height);
       renderer.drawRects(initial);
+    }).catch(err => {
+      console.error("[dusk/ui] TreemapCanvas: Failed to initialize renderer", err);
+      setReady(true); // Force ready so overlay disappears even on error
     });
 
     // ── ResizeObserver ────────────────────────────────────────────────────────

@@ -17,7 +17,7 @@ export function useSettings() {
     try {
       const stored = localStorage.getItem("dusk_settings");
       return stored ? { ...DEFAULT_SETTINGS, ...JSON.parse(stored) } : DEFAULT_SETTINGS;
-    } catch (e) {
+    } catch {
       return DEFAULT_SETTINGS;
     }
   });

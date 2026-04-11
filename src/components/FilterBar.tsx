@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, type Dispatch, type SetStateAction, type RefObject } from "react";
 import type { TreeFilters } from "../lib/filter";
 
 // Categories matching colormap extensions mapping
@@ -12,10 +12,10 @@ const CATEGORIES: Record<string, string[]> = {
 
 interface FilterBarProps {
   filters: TreeFilters;
-  setFilters: React.Dispatch<React.SetStateAction<TreeFilters>>;
+  setFilters: Dispatch<SetStateAction<TreeFilters>>;
   clearFilters: () => void;
   activeCount: number;
-  searchInputRef: React.RefObject<HTMLInputElement | null>;
+  searchInputRef: RefObject<HTMLInputElement | null>;
 }
 
 export default function FilterBar({ filters, setFilters, clearFilters, activeCount, searchInputRef }: FilterBarProps) {
@@ -30,9 +30,11 @@ export default function FilterBar({ filters, setFilters, clearFilters, activeCou
   }, [localQuery, setFilters]);
 
   // Sync if cleared externally
-  useEffect(() => {
+  const [prevQuery, setPrevQuery] = useState(filters.nameQuery);
+  if (filters.nameQuery !== prevQuery) {
+    setPrevQuery(filters.nameQuery);
     if (!filters.nameQuery) setLocalQuery("");
-  }, [filters.nameQuery]);
+  }
 
   const toggleCategory = (cat: string) => {
     const exts = CATEGORIES[cat];
