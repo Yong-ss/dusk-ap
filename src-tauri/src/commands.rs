@@ -1,10 +1,7 @@
-use std::{
-    sync::{
-        atomic::Ordering,
-        mpsc,
-        Arc,
-    },
-    time::Duration,
+use std::sync::{
+    atomic::Ordering,
+    mpsc,
+    Arc,
 };
 
 use serde_json::json;
@@ -13,7 +10,7 @@ use tauri::{AppHandle, Emitter, State};
 use sysinfo::Disks;
 
 use crate::{
-    models::{ScanError, ScanOptions, DriveInfo},
+    models::{ScanOptions, DriveInfo},
     platform::create_scanner,
     ScanState,
 };
@@ -41,55 +38,25 @@ pub async fn scan_directory(
 
     tokio::task::spawn_blocking(move || {
         println!("[dusk/core] 🚀 Launching scanner thread...");
-        // Boot the scanner factory
         let (scanner, method) = create_scanner(&path, options.clone());
         println!("[dusk/core] 🛠 Scanner selected: {}", method);
 
-        // Emit scan start event
         let _ = app.emit("scan_start", json!({ "method": method }));
 
         let (tx, rx) = mpsc::channel();
 
-        // Spawn event-relay thread so we don't block the scan loop on IPC.
         let app_clone = app.clone();
         std::thread::spawn(move || {
             for chunk in rx {
-                // Throttle: Ensure the WebView has time to process the last batch
-                std::thread::sleep(Duration::from_millis(15));
                 if let Err(e) = app_clone.emit("scan_chunk", &chunk) {
                     eprintln!("[dusk/cmd] emit error: {e}");
                 }
             }
         });
 
-        let mut current_method = method;
-        let mut current_scanner = scanner;
-
-        loop {
-            match current_scanner.scan(&path, tx.clone(), cancel.clone()) {
-                Ok(()) => break,
-                Err(ScanError::Cancelled) => {
-                    eprintln!("[dusk/cmd] scan cancelled by user");
-                    break;
-                }
-                Err(e) if current_method == "mft" => {
-                    eprintln!("[dusk/cmd] MFT scan failed, falling back to walkdir: {e}");
-                    // Fallback to walkdir
-                    current_method = "walkdir";
-                    let (fallback_scanner, _) = create_scanner(&path, options.clone());
-                    current_scanner = fallback_scanner;
-                    
-                    // Notify frontend of method change
-                    let _ = app.emit("scan_start", json!({ "method": "walkdir" }));
-                    continue;
-                }
-                Err(e) => {
-                    eprintln!("[dusk/cmd] scan error: {e}");
-                    // Emit an error event so the frontend can show a message.
-                    let _ = app.emit("scan_error", e.to_string());
-                    break;
-                }
-            }
+        if let Err(e) = scanner.scan(&path, tx, cancel) {
+             eprintln!("[dusk/cmd] scan error: {e}");
+             let _ = app.emit("scan_error", e.to_string());
         }
     });
 

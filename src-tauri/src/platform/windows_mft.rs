@@ -116,7 +116,7 @@ impl Scanner for WindowsMftScanner {
             return Err(ScanError::Permission(format!("Failed to open volume {} with Direct I/O. Run as administrator.", vol_path)));
         }
 
-        // ── Phase 0: Boot Sector ───────────────────────────────────────────
+        // ── Phase 0: Boot Sector ──────────────────────────────────────
         let mut boot_buffer = AlignedBuffer::new(4096)?;
         read_at(handle, 0, boot_buffer.as_mut_slice())?;
         
@@ -133,7 +133,7 @@ impl Scanner for WindowsMftScanner {
             2u64.pow((-mft_record_size_val) as u32)
         };
 
-        // ── Phase 1: MFT Bounds ────────────────────────────────────────────
+        // ── Phase 1: Read MFT Bounds ──────────────────────────────────
         let mft_start_offset = mft_lcn * bytes_per_cluster;
         let mut mft0_buffer = AlignedBuffer::new(4096)?;
         read_at(handle, mft_start_offset, mft0_buffer.as_mut_slice())?;
@@ -147,7 +147,7 @@ impl Scanner for WindowsMftScanner {
             total_mft_size += clusters * bytes_per_cluster;
         }
 
-        // ── Phase 2: DMA Engine ────────────────────────────────────────────
+        // ── Phase 2: DMA Engine ──────────────────────────────────────
         let read_start = Instant::now();
         let mut mft_buffer = AlignedBuffer::new(total_mft_size as usize)?;
         let mut buffer_offset = 0;
@@ -162,19 +162,22 @@ impl Scanner for WindowsMftScanner {
         }
         let read_elapsed = read_start.elapsed();
 
-        // ── Phase 3: High-Speed Parallel Parse ─────────────────────────────
+        // ── Phase 3: High-Speed Parallel Parse ────────────────────────
         let parse_start = Instant::now();
         let total_records = total_mft_size / mft_record_size;
         
-        let mut flat_entries: HashMap<u64, MftEntry> = mft_buffer.as_mut_slice()
+        // Zero-HashMap: Collect into indexed vector
+        let raw_entries: Vec<Option<MftEntry>> = mft_buffer.as_mut_slice()
             .par_chunks_mut(mft_record_size as usize)
             .enumerate()
-            .filter_map(|(enum_i, record)| {
+            .map(|(enum_i, record)| {
                 let i = enum_i as u64;
                 if cancel.load(Ordering::Relaxed) { return None; }
                 
                 if record.len() < 42 || &record[0..4] != b"FILE" { return None; }
-                if i < 24 { return None; }
+                
+                // Allow record 5 (root)
+                if i < 24 && i != 5 { return None; }
 
                 let flags = u16::from_le_bytes([record[22], record[23]]);
                 if flags & 0x0001 == 0 { return None; }
@@ -182,7 +185,6 @@ impl Scanner for WindowsMftScanner {
 
                 apply_fixups(record, bytes_per_sector as usize);
 
-                // Offset to first attribute is at 0x14 (20 dec)
                 let mut attr_offset = u16::from_le_bytes([record[20], record[21]]) as usize;
                 let mut name: Option<String> = None;
                 let mut parent_id: u64 = 0;
@@ -190,10 +192,10 @@ impl Scanner for WindowsMftScanner {
                 let mut has_file_name_attr = false;
 
                 while attr_offset + 8 < mft_record_size as usize {
-                    let attr_type = u32::from_le_bytesByRef(&record[attr_offset..attr_offset+4]);
+                    let attr_type = u32::from_le_bytes_by_ref(&record[attr_offset..attr_offset+4]);
                     if attr_type == 0xFFFFFFFF { break; }
-                    let attr_len = u32::from_le_bytesByRef(&record[attr_offset+4..attr_offset+8]) as usize;
-                    if attr_len < 24 || attr_offset + attr_len > mft_record_size as usize { break; }
+                    let attr_len = u32::from_le_bytes_by_ref(&record[attr_offset+4..attr_offset+8]) as usize;
+                    if attr_len < 8 || attr_offset + attr_len > mft_record_size as usize { break; }
 
                     match attr_type {
                         0x30 => { // $FILE_NAME
@@ -230,13 +232,12 @@ impl Scanner for WindowsMftScanner {
                                 let is_non_resident = record[attr_offset + 8] != 0;
                                 if is_non_resident {
                                     if attr_offset + 64 <= mft_record_size as usize {
-                                        // REAL SIZE is at offset 0x38 (56 dec)
-                                        data_size = u64::from_le_bytesByRef(&record[attr_offset+56..attr_offset+64]);
+                                        // Real Size at 0x30 (48 dec)
+                                        data_size = u64::from_le_bytes_by_ref(&record[attr_offset+48..attr_offset+56]);
                                     }
                                 } else {
-                                    // RESIDENT VALUE LENGTH is at offset 0x10 (16 dec)
                                     if attr_offset + 24 <= mft_record_size as usize {
-                                        data_size = u32::from_le_bytesByRef(&record[attr_offset+16..attr_offset+20]) as u64;
+                                        data_size = u32::from_le_bytes_by_ref(&record[attr_offset+16..attr_offset+20]) as u64;
                                     }
                                 }
                             }
@@ -246,47 +247,57 @@ impl Scanner for WindowsMftScanner {
                     attr_offset += attr_len;
                 }
 
+                if i == 5 {
+                    return Some(MftEntry {
+                        name: drive_letter.to_string() + ":",
+                        parent_id: 0,
+                        size: 0,
+                        kind: NodeKind::Dir,
+                    });
+                }
+
                 if !has_file_name_attr { return None; }
                 if let Some(n) = name {
-                    Some((i, MftEntry {
+                    Some(MftEntry {
                         name: n,
                         parent_id,
                         size: data_size,
                         kind: if is_dir { NodeKind::Dir } else { NodeKind::File },
-                    }))
+                    })
                 } else {
                     None
                 }
             }).collect();
         let parse_elapsed = parse_start.elapsed();
 
-        // ── Phase 4: Ultimate Array-Based Aggregation ──────────────────────
+        // ── Phase 4: Topology Speed Vault (Array Only) ──────────────────
         let aggregate_start = Instant::now();
-        let max_id = flat_entries.keys().cloned().max().unwrap_or(0) as usize;
+        let max_id = raw_entries.len();
         
-        // Use flat Vecs for O(1) indexing performance
-        let mut entry_sizes = vec![0u64; max_id + 1];
-        let mut parent_ids = vec![0u64; max_id + 1];
-        let mut child_counts = vec![0u32; max_id + 1];
-        let mut kind_is_dir = vec![false; max_id + 1];
+        let mut entry_sizes = vec![0u64; max_id];
+        let mut parent_ids = vec![0u64; max_id];
+        let mut child_counts = vec![0u32; max_id];
+        let mut hierarchy: Vec<Vec<u64>> = vec![vec![]; max_id];
 
-        for (&id, entry) in &flat_entries {
-            let idx = id as usize;
-            entry_sizes[idx] = entry.size;
-            parent_ids[idx] = entry.parent_id;
-            kind_is_dir[idx] = entry.kind == NodeKind::Dir;
-            
-            let pid = entry.parent_id as usize;
-            if pid <= max_id && pid != idx {
-                child_counts[pid] += 1;
+        for (id_idx, entry_opt) in raw_entries.iter().enumerate() {
+            if let Some(entry) = entry_opt {
+                let id = id_idx as u64;
+                entry_sizes[id_idx] = entry.size;
+                parent_ids[id_idx] = entry.parent_id;
+                
+                let pid = entry.parent_id;
+                if pid < max_id as u64 && pid != id {
+                    child_counts[pid as usize] += 1;
+                    hierarchy[pid as usize].push(id);
+                }
             }
         }
 
-        // Topological Sort (Leaf-to-Root) propagation
-        let mut leaf_queue = Vec::with_capacity(flat_entries.len());
-        for (&id, _) in &flat_entries {
-            if child_counts[id as usize] == 0 {
-                leaf_queue.push(id);
+        // Topological Sort for size propagation
+        let mut leaf_queue = Vec::with_capacity(max_id);
+        for i in 0..max_id {
+            if raw_entries[i].is_some() && child_counts[i] == 0 {
+                leaf_queue.push(i as u64);
             }
         }
 
@@ -295,110 +306,111 @@ impl Scanner for WindowsMftScanner {
             let cid = leaf_queue[head];
             head += 1;
 
-            let c_idx = cid as usize;
-            let pid = parent_ids[c_idx];
-            let p_idx = pid as usize;
-
-            if pid != cid && pid <= max_id as u64 && pid > 0 {
-                let c_size = entry_sizes[c_idx];
-                entry_sizes[p_idx] += c_size;
-                
-                child_counts[p_idx] -= 1;
-                if child_counts[p_idx] == 0 {
+            let pid = parent_ids[cid as usize];
+            if pid != cid && pid < max_id as u64 && pid > 0 {
+                entry_sizes[pid as usize] += entry_sizes[cid as usize];
+                child_counts[pid as usize] -= 1;
+                if child_counts[pid as usize] == 0 {
                     leaf_queue.push(pid);
                 }
             }
         }
-
-        // Apply pre-computed sizes back to flat_entries
-        for (id, entry) in flat_entries.iter_mut() {
-            entry.size = entry_sizes[*id as usize];
-        }
         let aggregate_elapsed = aggregate_start.elapsed();
 
-        // ── Phase 5: Saturation BFS Stream ─────────────────────────────────
+        // ── Phase 5: Virtual Tree Stream (Folder-First) ───────────────
         let stream_start = Instant::now();
-        let mut hierarchy: HashMap<u64, Vec<u64>> = HashMap::with_capacity(flat_entries.len());
-        for (&id, entry) in &flat_entries {
-            hierarchy.entry(entry.parent_id).or_default().push(id);
-        }
-
-        let base_path = path.trim_end_matches(['/', '\\']).to_string();
-        let mut path_cache: HashMap<u64, String> = HashMap::with_capacity(flat_entries.len() / 5);
+        let base_path = format!("{}:\\", drive_letter);
+        let mut path_cache: HashMap<u64, String> = HashMap::with_capacity(300000);
         path_cache.insert(5, base_path.clone());
 
         let mut batch: Vec<FileNode> = Vec::with_capacity(BATCH_SIZE);
         let mut scanned_count = 0u64;
         let mut total_disk_size = 0u64;
 
-        let mut debug_count = 0;
+        // BFS traversal
         let mut queue = vec![5u64];
+        
+        // STAGE 1: Explicitly send root
+        tx.send(ScanChunk {
+            nodes: vec![FileNode {
+                id: "5".to_string(),
+                name: base_path.clone(),
+                path: base_path.clone(),
+                parent_id: None,
+                size: entry_sizes[5],
+                kind: NodeKind::Dir,
+                extension: None,
+                children: None,
+                modified: None,
+            }],
+            progress: ScanProgress {
+                scanned: 1,
+                total_size: 0,
+                current_path: base_path.clone(),
+                done: false,
+                total_records: Some(total_records),
+                processed_records: Some(total_records),
+            },
+        }).ok();
+
+        // STAGE 2: Stream Folders (Crucial for instant UI response)
         while let Some(pid) = queue.pop() {
             if cancel.load(Ordering::Relaxed) { return Err(ScanError::Cancelled); }
-            let children = match hierarchy.get(&pid) {
-                Some(c) => c,
-                None => continue,
-            };
-            
-            let p_path = path_cache.get(&pid).cloned().unwrap_or_else(|| base_path.clone());
+            let children = &hierarchy[pid as usize];
+            let p_path = path_cache.get(&pid).cloned().unwrap_or(base_path.clone());
 
             for &cid in children {
-                if cid == pid { continue; }
-                if let Some(entry) = flat_entries.get(&cid) {
+                if let Some(entry) = &raw_entries[cid as usize] {
                     scanned_count += 1;
                     if entry.kind == NodeKind::File {
                         total_disk_size += entry.size;
-                        if debug_count < 10 && entry.size > 0 {
-                            eprintln!("[DEBUG] Found File: {} | Size: {} bytes", entry.name, entry.size);
-                            debug_count += 1;
-                        }
                     }
 
                     if entry.kind == NodeKind::Dir {
                         let full_path = format!("{}\\{}", p_path, entry.name);
                         path_cache.insert(cid, full_path);
                         queue.push(cid);
-                    }
+                        
+                        // We ONLY push folders to the frontend stream to eliminate the 2.2M JSON object bottleneck. 
+                        // The sizes are already aggregated so the folders show the right size.
+                        batch.push(FileNode {
+                            id: cid.to_string(),
+                            name: entry.name.clone(),
+                            path: String::new(), 
+                            parent_id: Some(pid.to_string()),
+                            size: entry_sizes[cid as usize], 
+                            kind: entry.kind.clone(),
+                            extension: None,
+                            children: None,
+                            modified: None,
+                        });
 
-                    batch.push(FileNode {
-                        id: cid.to_string(),
-                        name: entry.name.clone(),
-                        path: String::new(), 
-                        parent_id: Some(pid.to_string()),
-                        size: entry.size, 
-                        kind: entry.kind.clone(),
-                        extension: std::path::Path::new(&entry.name).extension()
-                            .map(|e| e.to_string_lossy().to_lowercase()),
-                        children: None,
-                        modified: None,
-                    });
-
-                    if batch.len() >= BATCH_SIZE {
-                        tx.send(ScanChunk {
-                            nodes: std::mem::take(&mut batch),
-                            progress: ScanProgress {
-                                scanned: scanned_count,
-                                total_size: total_disk_size,
-                                current_path: format!("Deploying: {}", entry.name),
-                                done: false,
-                                total_records: Some(total_records),
-                                processed_records: Some(total_records),
-                            },
-                        }).ok();
+                        if batch.len() >= BATCH_SIZE {
+                            tx.send(ScanChunk {
+                                nodes: std::mem::take(&mut batch),
+                                progress: ScanProgress {
+                                    scanned: scanned_count,
+                                    total_size: total_disk_size,
+                                    current_path: format!("Mapping: {}", entry.name),
+                                    done: false,
+                                    total_records: Some(total_records),
+                                    processed_records: Some(total_records),
+                                },
+                            }).ok();
+                        }
                     }
                 }
             }
         }
         let stream_elapsed = stream_start.elapsed();
 
-        eprintln!("\n[WIZTREE RIVAL ULTIMATE BREAKDOWN]");
-        eprintln!("- Volume: {}", vol_path);
-        eprintln!("- Phase 2 (Read):      {:? }", read_elapsed);
-        eprintln!("- Phase 3 (Parse):     {:? }", parse_elapsed);
-        eprintln!("- Phase 4 (Array Agg): {:? }", aggregate_elapsed);
-        eprintln!("- Phase 5 (Stream):    {:? }", stream_elapsed);
-        eprintln!("- TOTAL BACKEND: {:?}", global_start.elapsed());
-        eprintln!("- Final Nodes: {}\n", scanned_count);
+        eprintln!("\n[DUSK SATURATION ENGINE]");
+        eprintln!("- Read DMA: {:? }", read_elapsed);
+        eprintln!("- Parse:    {:? }", parse_elapsed);
+        eprintln!("- Aggr:     {:? }", aggregate_elapsed);
+        eprintln!("- Stream:   {:? }", stream_elapsed);
+        eprintln!("- TOTAL:    {:?}", global_start.elapsed());
+        eprintln!("- Objects:  {}\n", scanned_count);
 
         tx.send(ScanChunk {
             nodes: batch,
@@ -417,17 +429,17 @@ impl Scanner for WindowsMftScanner {
 }
 
 trait LeBytesExt {
-    fn from_le_bytesByRef(bytes: &[u8]) -> Self;
+    fn from_le_bytes_by_ref(bytes: &[u8]) -> Self;
 }
 
 impl LeBytesExt for u32 {
-    fn from_le_bytesByRef(bytes: &[u8]) -> Self {
+    fn from_le_bytes_by_ref(bytes: &[u8]) -> Self {
         u32::from_le_bytes(bytes[0..4].try_into().unwrap())
     }
 }
 
 impl LeBytesExt for u64 {
-    fn from_le_bytesByRef(bytes: &[u8]) -> Self {
+    fn from_le_bytes_by_ref(bytes: &[u8]) -> Self {
         u64::from_le_bytes(bytes[0..8].try_into().unwrap())
     }
 }
@@ -465,9 +477,9 @@ fn get_data_runs(record: &[u8]) -> Result<Vec<(u64, i64)>, ScanError> {
     let record_len = record.len();
 
     while attr_offset + 8 < record_len {
-        let attr_type = u32::from_le_bytesByRef(&record[attr_offset..attr_offset+4]);
+        let attr_type = u32::from_le_bytes_by_ref(&record[attr_offset..attr_offset+4]);
         if attr_type == 0xFFFFFFFF { break; }
-        let attr_len = u32::from_le_bytesByRef(&record[attr_offset+4..attr_offset+8]) as usize;
+        let attr_len = u32::from_le_bytes_by_ref(&record[attr_offset+4..attr_offset+8]) as usize;
         if attr_len < 8 || attr_offset + attr_len > record_len { break; }
         
         let is_non_resident = record[attr_offset + 8] != 0;

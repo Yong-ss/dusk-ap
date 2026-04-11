@@ -16,7 +16,12 @@
         "width": 1440,
         "height": 920,
         "minWidth": 1100,
-        "minHeight": 700
+        "minHeight": 700,
+        "transparent": true,
+        "windowEffects": {
+          "effects": ["mica"],
+          "state": "active"
+        }
       }
     ],
     "security": {

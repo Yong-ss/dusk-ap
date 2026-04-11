@@ -27,8 +27,8 @@ export interface FileNode {
 
 export interface ScanProgress {
   scanned: number;
-  total_size: number;
-  current_path: string;
+  totalSize: number;
+  currentPath: string;
   done: boolean;
   totalRecords?: number;
   processedRecords?: number;

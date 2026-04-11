@@ -856,7 +856,6 @@ dependencies = [
  "tauri-plugin-dialog",
  "tauri-plugin-opener",
  "tokio",
- "walkdir",
  "windows 0.52.0",
 ]
 

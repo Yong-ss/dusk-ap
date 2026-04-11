@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { open } from '@tauri-apps/plugin-dialog';
 import { useScan } from './hooks/useScan';
+import TreemapCanvas from './components/TreemapCanvas';
 import FileList from './components/FileList';
 import Breadcrumb from './components/Breadcrumb';
 import { formatCount, getParentPath, formatBytes } from './lib/format';
@@ -66,9 +67,9 @@ const App: React.FC = () => {
     // Case 1: MFT (accurate count)
     progressPercent = Math.min(100, Math.round((progress.processedRecords / progress.totalRecords) * 100));
     progressLabel = `Analyzing MFT Index ${progressPercent}%`;
-  } else if (estimatedTotalSize && progress?.total_size) {
+  } else if (estimatedTotalSize && progress?.totalSize) {
     // Case 2: Volume Root Heuristic (used space)
-    progressPercent = Math.min(100, Math.round((progress.total_size / estimatedTotalSize) * 100));
+    progressPercent = Math.min(100, Math.round((progress.totalSize / estimatedTotalSize) * 100));
     progressLabel = `Probing Volume ${progressPercent}%`;
   } else if (isScanning) {
     // Case 3: Subdirectory (Indeterminate)
@@ -79,12 +80,12 @@ const App: React.FC = () => {
   const formatMs = (ms: number) => (ms / 1000).toFixed(1) + 's';
 
   return (
-    <div className="flex h-screen bg-gray-950 text-white font-sans overflow-hidden">
+    <div className="flex h-screen bg-app text-primary font-sans overflow-hidden">
       {/* Sidebar */}
-      <aside className="w-56 bg-gray-900 border-r border-gray-800 flex flex-col pt-6 shrink-0">
+      <aside className="w-56 glass-panel border-r border-border-soft flex flex-col pt-6 shrink-0 relative z-10">
         <div className="px-6 mb-8 group cursor-default">
           <h1 className="text-2xl font-black tracking-tighter text-white group-hover:text-emerald-400 transition-colors">Dusk</h1>
-          <p className="text-[10px] text-gray-500 uppercase tracking-widest mt-1 font-bold">Disk Space Analyzer</p>
+          <p className="text-[10px] text-muted uppercase tracking-widest mt-1 font-bold">Disk Space Analyzer</p>
         </div>
 
         <nav className="flex-1 px-4 space-y-2">
@@ -129,14 +130,14 @@ const App: React.FC = () => {
           />
         )}
         
-        <FileList 
-          viewRoot={viewNode || null} 
-          onDirClick={handleDirClick} 
-        />
+        {/* Split View: Treemap takes primary focus, List secondary if needed, or just Treemap for now */}
+        <div className="flex-1 min-h-0 relative">
+          <TreemapCanvas viewRoot={viewNode || null} onNodeClick={handleDirClick} />
+        </div>
 
         {/* Improved Status Bar */}
         {(isScanning || (progress?.scanned || 0) > 0) && (
-          <div className="absolute bottom-0 left-0 right-0 bg-gray-900/95 backdrop-blur-xl border-t border-gray-800 px-6 py-4 flex flex-col gap-3 z-20 shadow-[0_-10px_40px_rgba(0,0,0,0.6)]">
+          <div className="absolute bottom-0 left-0 right-0 glass-panel border-t border-border-soft px-6 py-4 flex flex-col gap-3 z-20">
             <div className="flex items-center justify-between text-[10px]">
               <div className="flex items-center gap-4 min-w-0">
                 <span className="flex items-center gap-2 shrink-0">
@@ -146,8 +147,8 @@ const App: React.FC = () => {
                   </span>
                 </span>
                 <span className="text-gray-800 shrink-0">|</span>
-                <span className="text-gray-500 truncate font-mono italic" title={progress?.current_path}>
-                   {isScanning ? (progress?.current_path || 'Initializing stream...') : `Processed ${formatCount(progress?.scanned || 0)} objects`}
+                <span className="text-gray-500 truncate font-mono italic" title={progress?.currentPath}>
+                   {isScanning ? (progress?.currentPath || 'Initializing stream...') : `Processed ${formatCount(progress?.scanned || 0)} objects`}
                 </span>
               </div>
               
@@ -158,7 +159,7 @@ const App: React.FC = () => {
                 </div>
                 <div className="text-right min-w-[60px]">
                   <p className="text-gray-600 uppercase text-[8px] font-black leading-none mb-0.5">Size</p>
-                  <p className="text-emerald-400 font-bold">{formatBytes(progress?.total_size || 0)}</p>
+                  <p className="text-emerald-400 font-bold">{formatBytes(progress?.totalSize || 0)}</p>
                 </div>
                 <div className="text-right min-w-[50px]">
                   <p className="text-gray-600 uppercase text-[8px] font-black leading-none mb-0.5">Time</p>
