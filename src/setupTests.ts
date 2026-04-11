@@ -16,7 +16,7 @@ Object.defineProperty(window, "matchMedia", {
 });
 
 // ── ResizeObserver (not in jsdom) ─────────────────────────────────────────────
-global.ResizeObserver = class ResizeObserver {
+(globalThis as Record<string, unknown>)["ResizeObserver"] = class {
   observe() {}
   unobserve() {}
   disconnect() {}
