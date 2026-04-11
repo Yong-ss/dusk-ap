@@ -306,6 +306,8 @@ function makeRect(
     size: node.size,
     kind: node.kind,
     extension: node.extension,
+    modified: node.modified,
+    path: node.path,
   };
 }
 

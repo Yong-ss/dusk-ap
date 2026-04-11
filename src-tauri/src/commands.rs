@@ -64,3 +64,15 @@ pub async fn cancel_scan(state: State<'_, ScanState>) -> Result<(), String> {
     state.cancel.store(true, Ordering::Relaxed);
     Ok(())
 }
+
+/// Delete a file or directory recursively.
+#[tauri::command]
+pub async fn delete_path(path: String) -> Result<(), String> {
+    let metadata = std::fs::metadata(&path).map_err(|e| e.to_string())?;
+    if metadata.is_dir() {
+        std::fs::remove_dir_all(&path).map_err(|e| e.to_string())?;
+    } else {
+        std::fs::remove_file(&path).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}

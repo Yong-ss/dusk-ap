@@ -55,23 +55,72 @@ export function useScan(): UseScanReturn {
   }, []);
 
   const flushTree = useCallback((finalProgress: ScanProgress | null) => {
-    // Build a synthetic root from the flat node map.
-    // In Phase 5 this becomes the real tree assembly; for now it's a flat list.
     const nodes = Array.from(nodeBuffer.current.values());
 
     if (nodes.length === 0) {
       setTree(null);
     } else {
-      // Create a virtual root node that holds all top-level entries.
-      const root: FileNode = {
-        id: "root",
-        name: "Scan Root",
-        path: finalProgress?.current_path ?? "",
-        size: finalProgress?.total_size ?? 0,
-        kind: "dir",
-        children: nodes,
-      };
-      setTree(root);
+      // 1. Sort nodes by path length, shortest first. This ensures parents are created before children.
+      nodes.sort((a, b) => a.path.length - b.path.length);
+
+      // 2. Build map of path -> FileNode representing the tree properly.
+      const treeMap = new Map<string, FileNode>();
+      let rootPath = finalProgress?.current_path ?? "";
+      
+      // If the scan root hasn't been emitted as a separate node yet, make sure we have a root.
+      // But usually walkdir gives the target folder path as the very first entry.
+      if (nodes.length > 0 && !rootPath) {
+         rootPath = nodes[0].path;
+      }
+      
+      for (const node of nodes) {
+        // Clone node because we will mutate children
+        const clonedNode = { ...node, children: node.kind === "dir" ? [] : undefined };
+        treeMap.set(node.path, clonedNode);
+      }
+
+      // 3. Re-parent the nodes.
+      let rootNode: FileNode | null = null;
+
+      for (const [path, node] of treeMap.entries()) {
+        // Simple heuristic: if this is exactly the root path (ignoring trailing slashes), it's the root.
+        if (rootPath && (path === rootPath || path + "\\" === rootPath || path + "/" === rootPath)) {
+          rootNode = node;
+          continue;
+        }
+
+        // Find parent path.
+        // It's everything up to the last slash.
+        let parentPath = path;
+        const lastSlash = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
+        if (lastSlash >= 0) {
+          parentPath = path.substring(0, lastSlash);
+          
+          // If Windows drive (C:\) was the parent, keep the slash.
+          if (parentPath.endsWith(':')) {
+            parentPath += path[lastSlash];
+          } else if (parentPath === "") {
+            // Root path /
+            parentPath = "/";
+          }
+        } else {
+          // No slash found = must be relative path or itself a root. Fallback.
+          parentPath = "";
+        }
+
+        // If we can't find the exact parent, we fallback and attach it to the rootNode (or ignore).
+        const parentNode = treeMap.get(parentPath);
+        if (parentNode && parentNode.children) {
+          parentNode.children.push(node);
+        } else if (!rootNode && path === nodes[0].path) {
+          // If we never hit the exact root path, the shortest path is our fallback root.
+          rootNode = node;
+        } else if (rootNode && rootNode.children) {
+           rootNode.children.push(node); // Orphan fallback
+        }
+      }
+
+      setTree(rootNode || treeMap.get(nodes[0].path) || null);
     }
     if (finalProgress) setProgress(finalProgress);
   }, []);

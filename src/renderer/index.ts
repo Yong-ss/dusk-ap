@@ -38,6 +38,7 @@ function makeBenchRects(w: number, h: number): TreemapRect[] {
     label: "",
     size: 1,
     kind: "file" as const,
+    path: "",
   }));
 }
 

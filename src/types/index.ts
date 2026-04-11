@@ -46,4 +46,6 @@ export interface TreemapRect {
   size: number;
   kind: "file" | "dir";
   extension?: string;
+  modified?: number;
+  path: string;
 }

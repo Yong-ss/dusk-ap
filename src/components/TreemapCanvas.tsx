@@ -44,6 +44,7 @@ function makeRandomRects(count: number, w: number, h: number): TreemapRect[] {
       label: `block-${i}`,
       size: Math.floor(1e6 + Math.random() * 9e8),
       kind: Math.random() > 0.3 ? "file" : "dir",
+      path: `dummy/path/block-${i}`,
     } satisfies TreemapRect;
   });
 }

@@ -20,6 +20,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::scan_directory,
             commands::cancel_scan,
+            commands::delete_path,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
