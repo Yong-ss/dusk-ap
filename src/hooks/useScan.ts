@@ -2,11 +2,10 @@ import { useCallback, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { FileNode, ScanChunk, ScanProgress } from "../types";
-
-// ── Types ─────────────────────────────────────────────────────────────────────
+import type { Settings } from "./useSettings";
 
 export interface UseScanReturn {
-  startScan: (path: string) => Promise<void>;
+  startScan: (path: string, options: Settings) => Promise<void>;
   cancelScan: () => Promise<void>;
   tree: FileNode | null;
   progress: ScanProgress | null;
@@ -139,7 +138,7 @@ export function useScan(): UseScanReturn {
   // ── Public API ──────────────────────────────────────────────────────────────
 
   const startScan = useCallback(
-    async (path: string) => {
+    async (path: string, options: Settings) => {
       // Clean up any previous session.
       cleanupListeners();
       if (throttleTimer.current) {
@@ -182,7 +181,14 @@ export function useScan(): UseScanReturn {
       });
 
       try {
-        await invoke("scan_directory", { path });
+        await invoke("scan_directory", { 
+          path, 
+          options: {
+            showCase: options.showHiddenFiles, // using camelCase for models.rs serde
+            showHiddenFiles: options.showHiddenFiles,
+            includeSystemFiles: options.includeSystemFiles,
+          }
+        });
       } catch (err) {
         setError(String(err));
         setIsScanning(false);

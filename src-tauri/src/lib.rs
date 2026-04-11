@@ -21,6 +21,7 @@ pub fn run() {
             commands::scan_directory,
             commands::cancel_scan,
             commands::delete_path,
+            commands::get_drives,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

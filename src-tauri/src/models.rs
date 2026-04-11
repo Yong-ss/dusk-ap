@@ -1,5 +1,20 @@
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScanOptions {
+    pub show_hidden_files: bool,
+    pub include_system_files: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DriveInfo {
+    pub name: String,
+    pub mount_point: String,
+    pub total_space: u64,
+    pub available_space: u64,
+}
+
 // ── File system node ────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

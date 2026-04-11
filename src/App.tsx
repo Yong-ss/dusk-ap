@@ -1,5 +1,6 @@
 import { AnimatePresence, motion } from "framer-motion";
 import { useState, useRef, useEffect, useMemo } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { useTheme } from "./components/ThemeProvider";
 import { useScan } from "./hooks/useScan";
@@ -14,6 +15,8 @@ import { useFilter } from "./hooks/useFilter";
 import { filterTree } from "./lib/filter";
 import FilterBar from "./components/FilterBar";
 import TopFilesPanel from "./components/TopFilesPanel";
+import SettingsPanel from "./components/SettingsPanel";
+import { useSettings } from "./hooks/useSettings";
 
 // ── Static sidebar data ───────────────────────────────────────────────────────
 
@@ -23,13 +26,34 @@ const QUICK_ACCESS = [
   { label: "Downloads", abbr: "Dl" },
 ];
 
+interface DriveInfo {
+  name: string;
+  mount_point: string;
+  total_space: number;
+  available_space: number;
+}
+
+interface RecentScan {
+  path: string;
+  time: number;
+  size: number;
+}
+
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export default function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const { cycleTheme, resolvedTheme, themeMode } = useTheme();
+  
+  const { settings, setSettings } = useSettings();
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
-  const { startScan, cancelScan, tree, progress, isScanning, error } = useScan();
+  const { startScan: rawStartScan, cancelScan, tree, progress, isScanning, error } = useScan();
+
+  // Settings-aware startScan wrapper
+  const startScan = async (path: string) => {
+    await rawStartScan(path, settings);
+  };
 
   // ── Phase 5 State ───────────────────────────────────────────────────────────
 
@@ -48,13 +72,52 @@ export default function App() {
   const searchInputRef = useRef<HTMLInputElement>(null);
   const [topFilesOpen, setTopFilesOpen] = useState(false);
 
-  // Keyboard binding for Ctrl+F
+  // ── Phase 7 Sidebar & Storage ───────────────────────────────────────────────
+  const [drives, setDrives] = useState<DriveInfo[]>([]);
+  const [recentScans, setRecentScans] = useState<RecentScan[]>([]);
+
+  const fetchDrives = async () => {
+    try {
+      const res = await invoke<DriveInfo[]>("get_drives");
+      setDrives(res);
+    } catch (e) {
+      console.error("Failed to fetch drives", e);
+    }
+  };
+
+  useEffect(() => {
+    fetchDrives();
+    try {
+      const storedScans = localStorage.getItem("dusk_recent_scans");
+      if (storedScans) setRecentScans(JSON.parse(storedScans));
+    } catch {}
+  }, []);
+
+  // Update recent scans when a scan finishes successfully
+  useEffect(() => {
+    if (!isScanning && progress?.done && tree) {
+      setRecentScans(prev => {
+        const item = { path: tree.path, time: Date.now(), size: progress.total_size };
+        const filtered = prev.filter(r => r.path !== item.path);
+        const next = [item, ...filtered].slice(0, 5);
+        localStorage.setItem("dusk_recent_scans", JSON.stringify(next));
+        return next;
+      });
+    }
+  }, [isScanning, progress?.done, tree]);
+
+  // Keyboard bindings
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Cmd+F on Mac, Ctrl+F on Windows/Linux
+      // Cmd+F or Ctrl+F
       if ((e.metaKey || e.ctrlKey) && e.key === "f") {
-        e.preventDefault(); // Prevent native browser search
+        e.preventDefault(); 
         searchInputRef.current?.focus();
+      }
+      // Cmd+, or Ctrl+, for Settings
+      if ((e.metaKey || e.ctrlKey) && e.key === ",") {
+        e.preventDefault();
+        setSettingsOpen(s => !s);
       }
     };
     window.addEventListener("keydown", handleKeyDown);
@@ -63,7 +126,7 @@ export default function App() {
 
   // ── Actions ─────────────────────────────────────────────────────────────────
 
-  async function handleScan() {
+  async function handleScanDialog() {
     if (isScanning) {
       await cancelScan();
       return;
@@ -103,10 +166,11 @@ export default function App() {
 
   const rects = useMemo(() => {
     if (!filteredViewRoot || bounds.width === 0 || bounds.height === 0) return undefined;
+    
     return computeTreemap(
       filteredViewRoot,
       { x: 0, y: 0, width: bounds.width, height: bounds.height },
-      { colorMap: DEFAULT_COLOR_MAP }
+      { colorMap: DEFAULT_COLOR_MAP, minBlockSize: settings.minBlockSize }
     );
   }, [filteredViewRoot, bounds]);
 
@@ -120,7 +184,6 @@ export default function App() {
     if (hoveredRect) {
       e.preventDefault();
       setContextMenu({ x: e.clientX, y: e.clientY, rect: hoveredRect });
-      // hide tooltip when context menu is open inside UI using conditional render
     }
   };
 
@@ -130,7 +193,6 @@ export default function App() {
     if (lastClick && lastClick.id === rect.id && now - lastClick.time < 300) {
       // Double click
       if (rect.kind === "dir") {
-        // Find the full FileNode from the current viewRoot's children
         if (viewRoot?.children) {
            const node = viewRoot.children.find(n => n.id === rect.id);
            if (node) {
@@ -159,15 +221,16 @@ export default function App() {
   // Backspace keybinding for popping view history
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Don't pop if context menu is open
-      if (e.key === "Backspace" && viewHistory.length > 0 && !contextMenu) {
+      // Don't pop if context menu or settings or top files is open, or focused input
+      if (e.key === "Backspace" && viewHistory.length > 0 && !contextMenu && !settingsOpen && !topFilesOpen) {
+        if (document.activeElement?.tagName === "INPUT") return;
         setViewHistory((prev) => prev.slice(0, -1));
         setHoveredRect(null);
       }
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [viewHistory.length, contextMenu]);
+  }, [viewHistory.length, contextMenu, settingsOpen, topFilesOpen]);
 
   // ── Derived display values ───────────────────────────────────────────────────
 
@@ -176,7 +239,6 @@ export default function App() {
     ? "rounded-full bg-red-600/80 px-5 py-2 text-sm font-semibold text-white shadow-lg hover:brightness-110"
     : "rounded-full bg-[rgb(var(--accent-video))] px-5 py-2 text-sm font-semibold text-white shadow-lg shadow-indigo-900/30 hover:brightness-110";
 
-  // Build the breadcrumbs sequence
   const activeCrumbs = [
     { name: tree?.path || "No scan active", index: -1 }
   ];
@@ -209,7 +271,7 @@ export default function App() {
 
             <button
               aria-label={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
-              className="rounded-full border border-border-soft bg-white/10 p-2 text-sm text-primary hover:bg-white/15"
+              className="rounded-full border border-border-soft bg-white/10 p-2 text-sm text-primary hover:bg-white/15 focus:ring-2 focus:ring-indigo-500/50 outline-none"
               onClick={() => setSidebarCollapsed((v) => !v)}
               type="button"
             >
@@ -217,7 +279,62 @@ export default function App() {
             </button>
           </div>
 
-          <div className="flex-1 space-y-6 overflow-y-auto px-4 py-5">
+          <div className="flex-1 space-y-6 overflow-y-auto px-4 py-5 scrollbar-thin scrollbar-thumb-white/10 scrollbar-track-transparent">
+            {/* Storage Drives */}
+            <section>
+              <div className="flex items-center justify-between mb-3">
+                <p className={`text-xs uppercase tracking-[0.3em] text-muted ${sidebarCollapsed ? "sr-only" : ""}`}>
+                  Drives
+                </p>
+                {!sidebarCollapsed && (
+                  <button onClick={fetchDrives} className="text-xs text-muted hover:text-primary transition-colors">⟳</button>
+                )}
+              </div>
+              <motion.div 
+                className="space-y-2"
+                initial="hidden"
+                animate="visible"
+                variants={{
+                  hidden: { opacity: 0 },
+                  visible: { opacity: 1, transition: { staggerChildren: 0.05 } }
+                }}
+              >
+                {drives.map(drive => {
+                  const usedItem = drive.total_space - drive.available_space;
+                  const ratio = usedItem / drive.total_space;
+                  return (
+                    <motion.button
+                      variants={{ hidden: { opacity: 0, y: 5 }, visible: { opacity: 1, y: 0 } }}
+                      key={drive.mount_point}
+                      onClick={() => {
+                        setViewHistory([]);
+                        void startScan(drive.mount_point);
+                      }}
+                      className="w-full text-left rounded-2xl border border-transparent bg-white/5 p-3 hover:border-border-soft hover:bg-white/10 transition-colors focus:ring-2 focus:ring-indigo-500/50 outline-none"
+                    >
+                      <div className="flex items-center gap-3">
+                        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-slate-900/70 text-[11px] font-semibold text-slate-100">
+                          {drive.mount_point.replace(/\\/g, '')}
+                        </span>
+                        {!sidebarCollapsed && (
+                          <div className="flex-1 min-w-0">
+                            <p className="truncate text-sm font-medium">{drive.name}</p>
+                            <p className="text-[10px] text-muted font-mono">{formatBytes(drive.available_space)} free of {formatBytes(drive.total_space)}</p>
+                          </div>
+                        )}
+                      </div>
+                      {!sidebarCollapsed && (
+                        <div className="mt-2 h-1 w-full overflow-hidden rounded-full bg-black/40">
+                          <div className="h-full bg-indigo-500" style={{ width: `${ratio * 100}%` }} />
+                        </div>
+                      )}
+                    </motion.button>
+                  );
+                })}
+              </motion.div>
+            </section>
+
+            {/* Quick Access */}
             <section>
               <p
                 className={`mb-3 text-xs uppercase tracking-[0.3em] text-muted ${sidebarCollapsed ? "sr-only" : ""}`}
@@ -228,11 +345,14 @@ export default function App() {
                 {QUICK_ACCESS.map((item) => (
                   <button
                     key={item.label}
-                    className="flex w-full items-center gap-3 rounded-2xl border border-transparent bg-white/5 px-3 py-3 text-left text-sm text-primary hover:border-border-soft hover:bg-white/10"
-                    onClick={() => void startScan(item.label)}
+                    className="flex w-full items-center gap-3 rounded-2xl border border-transparent bg-white/5 px-3 py-3 text-left text-sm text-primary hover:border-border-soft hover:bg-white/10 focus:ring-2 focus:ring-indigo-500/50 outline-none transition-colors"
+                    onClick={() => {
+                      setViewHistory([]);
+                      void startScan(item.label);
+                    }}
                     type="button"
                   >
-                    <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-slate-900/70 text-[11px] font-semibold uppercase text-slate-100">
+                    <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-slate-900/70 text-[11px] font-semibold text-slate-100">
                       {item.abbr}
                     </span>
                     {!sidebarCollapsed && (
@@ -242,11 +362,54 @@ export default function App() {
                 ))}
               </div>
             </section>
+
+            {/* Recent Scans */}
+            {recentScans.length > 0 && !sidebarCollapsed && (
+              <section>
+                <p className="mb-3 text-xs uppercase tracking-[0.3em] text-muted">
+                  Recent Scans
+                </p>
+                <div className="space-y-1">
+                  {recentScans.map((r, i) => (
+                    <button
+                      key={i}
+                      onClick={() => {
+                        setViewHistory([]);
+                        void startScan(r.path);
+                      }}
+                      className="group flex w-full items-center justify-between rounded-lg px-2 py-1.5 hover:bg-white/5 focus:ring-2 focus:ring-indigo-500/50 outline-none transition-colors"
+                    >
+                      <div className="flex flex-col text-left truncate flex-1 min-w-0 mr-2">
+                        <span className="truncate text-xs text-primary">{r.path}</span>
+                        <span className="text-[10px] text-muted font-mono">{new Date(r.time).toLocaleDateString()}</span>
+                      </div>
+                      <span className="text-[10px] font-mono text-indigo-300 opacity-60 group-hover:opacity-100 shrink-0">
+                        {formatBytes(r.size)}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </section>
+            )}
           </div>
 
-          <div className="border-t border-border-soft px-4 py-4">
+          <div className="border-t border-border-soft px-4 py-4 flex flex-col gap-2">
             <button
-              className="flex w-full items-center justify-between rounded-2xl border border-border-soft bg-white/5 px-4 py-3 text-sm hover:bg-white/10"
+              className="flex w-full items-center justify-between rounded-2xl border border-border-soft bg-white/5 px-4 py-3 text-sm hover:bg-white/10 focus:ring-2 focus:ring-indigo-500/50 outline-none transition-colors"
+              onClick={() => setSettingsOpen(true)}
+              type="button"
+            >
+              {!sidebarCollapsed ? (
+                <>
+                  <span>Settings</span>
+                  <span className="text-muted text-xs border border-white/10 rounded px-1.5 py-0.5">⌘,</span>
+                </>
+              ) : (
+                <span className="mx-auto">⚙</span>
+              )}
+            </button>
+            <button
+              className="flex w-full items-center justify-between rounded-2xl border border-border-soft bg-white/5 px-4 py-3 text-sm hover:bg-white/10 focus:ring-2 focus:ring-indigo-500/50 outline-none transition-colors"
               onClick={cycleTheme}
               type="button"
             >
@@ -279,7 +442,7 @@ export default function App() {
                       {idx > 0 && <span>/</span>}
                       <button 
                         onClick={() => handleCrumbClick(crumb.index)}
-                        className="truncate rounded-full bg-white/5 px-3 py-1 text-primary hover:bg-white/10 transition-colors max-w-[200px]"
+                        className="truncate rounded-full bg-white/5 px-3 py-1 text-primary hover:bg-white/10 focus:ring-2 focus:ring-indigo-500/50 outline-none transition-colors max-w-[200px]"
                       >
                         {crumb.name}
                       </button>
@@ -293,7 +456,7 @@ export default function App() {
               <div className="flex items-center gap-3">
                 <button
                   onClick={() => setTopFilesOpen(true)}
-                  className="rounded-full border border-border-soft bg-white/5 px-4 py-2 text-sm text-primary hover:bg-white/10 transition-colors"
+                  className="rounded-full border border-border-soft bg-white/5 px-4 py-2 text-sm text-primary hover:bg-white/10 focus:ring-2 focus:ring-indigo-500/50 outline-none transition-colors"
                 >
                   Top 50 Files
                 </button>
@@ -313,14 +476,13 @@ export default function App() {
                 <button
                   className={scanButtonClass}
                   id="scan-button"
-                  onClick={() => void handleScan()}
+                  onClick={() => void handleScanDialog()}
                   type="button"
                 >
                   {scanButtonLabel}
                 </button>
               </div>
               
-              {/* Added Scan Complete in right toolbar instead of overlaying canvas forever */}
               {!isScanning && progress?.done && (
                   <div className="text-[10px] text-muted text-right tracking-tight">
                     Finished {formatCount(progress.scanned)} files · {formatBytes(progress.total_size)}
@@ -348,14 +510,22 @@ export default function App() {
             {/* Subtle gradient overlay behind the canvas */}
             <div className="pointer-events-none absolute inset-0 z-0 bg-[linear-gradient(135deg,rgba(99,102,241,0.10),transparent_35%),linear-gradient(315deg,rgba(6,182,212,0.09),transparent_28%)]" />
 
-            {/* TreemapCanvas fills the entire pane */}
-            <TreemapCanvas 
-              rects={rects} 
-              onHover={setHoveredRect} 
-              onClick={handleRectClick} 
-            />
+            {/* TreemapCanvas wrap with Framer Motion for drill-down animation */}
+            <motion.div
+              className="absolute inset-0 z-10"
+              key={viewRoot?.id ?? "empty"}
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              transition={{ duration: 0.2, ease: "easeOut" }}
+            >
+              <TreemapCanvas 
+                rects={rects} 
+                onHover={setHoveredRect} 
+                onClick={handleRectClick} 
+              />
+            </motion.div>
 
-            {/* Error banner — floats above canvas */}
+            {/* Error banners & Placeholders float above canvas */}
             <AnimatePresence>
               {error && (
                 <motion.div
@@ -365,6 +535,19 @@ export default function App() {
                   initial={{ opacity: 0, y: -8 }}
                 >
                   ⚠ {error}
+                </motion.div>
+              )}
+              {!isScanning && tree && filteredViewRoot && (!filteredViewRoot.children || filteredViewRoot.children.length === 0) && (
+                <motion.div
+                  animate={{ opacity: 1 }}
+                  className="absolute inset-0 z-20 flex items-center justify-center bg-black/20 backdrop-blur-sm"
+                  exit={{ opacity: 0 }}
+                  initial={{ opacity: 0 }}
+                >
+                  <div className="text-center">
+                    <p className="text-lg font-semibold text-primary">Directory is empty</p>
+                    <p className="text-sm text-muted mt-2">No matching files found here.</p>
+                  </div>
                 </motion.div>
               )}
             </AnimatePresence>
@@ -416,8 +599,6 @@ export default function App() {
         onClose={() => setTopFilesOpen(false)}
         tree={tree}
         onFileClick={(_file, parentPath) => {
-          // Drill down logic: find the parent directory from the full tree to set as viewRoot
-          // Since find-by-path involves a recursive lookup from tree, we just do a quick breadth-first search.
           let targetParent: FileNode | null = null;
           if (tree) {
             const queue = [tree];
@@ -434,12 +615,17 @@ export default function App() {
           }
 
           if (targetParent && tree) {
-            // this is simplified; we set the root. In Phase 5, viewHistory logic is flat or simple stack.
-            // If the user clicks a file, we set the viewRoot to that file's parent.
             setViewHistory([tree, targetParent]);
           }
           setTopFilesOpen(false);
         }}
+      />
+
+      <SettingsPanel
+        isOpen={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        settings={settings}
+        setSettings={setSettings}
       />
     </div>
   );

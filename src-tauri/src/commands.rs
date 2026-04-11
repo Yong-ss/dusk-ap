@@ -6,8 +6,10 @@ use std::sync::{
 
 use tauri::{AppHandle, Emitter, State};
 
+use sysinfo::Disks;
+
 use crate::{
-    models::ScanError,
+    models::{ScanError, ScanOptions, DriveInfo},
     platform::create_scanner,
     ScanState,
 };
@@ -21,6 +23,7 @@ use crate::{
 #[tauri::command]
 pub async fn scan_directory(
     path: String,
+    options: ScanOptions,
     app: AppHandle,
     state: State<'_, ScanState>,
 ) -> Result<(), String> {
@@ -29,7 +32,8 @@ pub async fn scan_directory(
     let cancel = Arc::clone(&state.cancel);
 
     tokio::task::spawn_blocking(move || {
-        let scanner = create_scanner(&path);
+        // Boot the scanner factory
+        let mut scanner = create_scanner(&path, options);
         let (tx, rx) = mpsc::channel();
 
         // Spawn event-relay thread so we don't block the scan loop on IPC.
@@ -75,4 +79,33 @@ pub async fn delete_path(path: String) -> Result<(), String> {
         std::fs::remove_file(&path).map_err(|e| e.to_string())?;
     }
     Ok(())
+}
+
+/// Get mounted physical drives on the host OS using `sysinfo`
+#[tauri::command]
+pub fn get_drives() -> Result<Vec<DriveInfo>, String> {
+    let disks = Disks::new_with_refreshed_list();
+    let mut result = Vec::new();
+
+    for disk in disks.list() {
+        if disk.total_space() == 0 {
+            continue;
+        }
+
+        let name = disk.name().to_string_lossy().to_string();
+        let name = if name.is_empty() {
+            "Local Disk".to_string()
+        } else {
+            name
+        };
+
+        result.push(DriveInfo {
+            name,
+            mount_point: disk.mount_point().to_string_lossy().to_string(),
+            total_space: disk.total_space(),
+            available_space: disk.available_space(),
+        });
+    }
+
+    Ok(result)
 }

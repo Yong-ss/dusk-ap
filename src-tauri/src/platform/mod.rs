@@ -9,7 +9,7 @@ use std::sync::{
     Arc,
 };
 
-use crate::models::{ScanChunk, ScanError};
+use crate::models::{ScanChunk, ScanError, ScanOptions};
 
 // ── Public Scanner trait ──────────────────────────────────────────────────────
 
@@ -34,15 +34,16 @@ pub trait Scanner: Send + Sync {
 /// Strategy (Phase 2):
 /// - Windows volume root + elevated →  WindowsMftScanner (stub — promotes to real in Phase 8)
 /// - Everything else               →  UniversalScanner (walkdir)
-pub fn create_scanner(path: &str) -> Box<dyn Scanner> {
+pub fn create_scanner(path: &str, options: ScanOptions) -> Box<dyn Scanner> {
     #[cfg(windows)]
     {
         if is_volume_root(path) && is_elevated() {
+            // Note: MFT stub doesn't use options yet
             return Box::new(windows_mft::WindowsMftScanner::new());
         }
     }
 
-    Box::new(universal::UniversalScanner::new())
+    Box::new(universal::UniversalScanner::new(options))
 }
 
 // ── Windows helpers (compile-time gated) ─────────────────────────────────────
