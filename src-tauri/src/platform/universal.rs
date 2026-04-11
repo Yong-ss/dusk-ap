@@ -20,7 +20,7 @@ use crate::{
 };
 
 // How many nodes to buffer before emitting a chunk.
-const BATCH_SIZE: usize = 750;
+const BATCH_SIZE: usize = 2000;
 
 pub struct UniversalScanner {
     options: ScanOptions,
@@ -122,6 +122,7 @@ impl Scanner for UniversalScanner {
                 id: hash_path(&abs_path),
                 name,
                 path: abs_path,
+                parent_id: None,
                 size,
                 kind,
                 extension,
@@ -132,6 +133,11 @@ impl Scanner for UniversalScanner {
             batch.push(node);
 
             if batch.len() >= BATCH_SIZE {
+                let chunk_count = scanned / BATCH_SIZE as u64;
+                if chunk_count % 5 == 0 {
+                    println!("[dusk/core] 🛰 Emitting chunk {} ({} files so far)", chunk_count, scanned);
+                }
+                
                 let chunk = ScanChunk {
                     nodes: std::mem::take(&mut batch),
                     progress: ScanProgress {

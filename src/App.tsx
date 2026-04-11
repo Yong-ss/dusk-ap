@@ -1,741 +1,198 @@
-import { AnimatePresence, motion } from "framer-motion";
-import { useState, useRef, useEffect, useMemo, useCallback, type MouseEvent } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { useTheme } from "./components/ThemeProvider";
-import { useScan } from "./hooks/useScan";
-import TreemapCanvas from "./components/TreemapCanvas";
-import { formatBytes, formatCount } from "./lib/format";
-import Tooltip from "./components/Tooltip";
-import ContextMenu, { ContextMenuState } from "./components/ContextMenu";
-import { computeTreemap } from "./lib/treemap";
-import { DEFAULT_COLOR_MAP } from "./lib/colormap";
-import type { FileNode, TreemapRect } from "./types";
-import { useFilter } from "./hooks/useFilter";
-import { filterTree } from "./lib/filter";
-import FilterBar from "./components/FilterBar";
-import TopFilesPanel from "./components/TopFilesPanel";
-import SettingsPanel from "./components/SettingsPanel";
-import { useSettings } from "./hooks/useSettings";
+import React, { useState, useEffect, useCallback } from 'react';
+import { open } from '@tauri-apps/plugin-dialog';
+import { useScan } from './hooks/useScan';
+import FileList from './components/FileList';
+import Breadcrumb from './components/Breadcrumb';
+import { formatCount, getParentPath, formatBytes } from './lib/format';
+import { FileNode } from './types';
 
-// ── Static sidebar data ───────────────────────────────────────────────────────
-
-const QUICK_ACCESS = [
-  { label: "C:\\", abbr: "C:" },
-  { label: "D:\\Media", abbr: "D:" },
-  { label: "Downloads", abbr: "Dl" },
-];
-
-interface DriveInfo {
-  name: string;
-  mount_point: string;
-  total_space: number;
-  available_space: number;
-}
-
-interface RecentScan {
-  path: string;
-  time: number;
-  size: number;
-}
-
-// ── Component ─────────────────────────────────────────────────────────────────
-
-export default function App() {
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const { cycleTheme, resolvedTheme, themeMode } = useTheme();
+const App: React.FC = () => {
+  const { 
+    isScanning, progress, rootNode, treeMap, 
+    startScan, cancelScan, 
+    elapsedTime, duration, estimatedTotalSize 
+  } = useScan();
   
-  const { settings, setSettings } = useSettings();
-  const [showDebug, setShowDebug] = useState(false);
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [scanPath, setScanPath] = useState<string | null>(null);
+  const [currentViewId, setCurrentViewId] = useState<string | null>(null);
 
-  const { startScan: rawStartScan, cancelScan, tree, progress, isScanning, error, method, eventLog } = useScan();
+  const viewNode = currentViewId ? treeMap.get(currentViewId) : rootNode;
 
-  // Settings-aware startScan wrapper
-  const startScan = async (path: string) => {
-    await rawStartScan(path, settings);
+  const handleScan = async () => {
+    try {
+      const selected = await open({
+        directory: true,
+        multiple: false,
+        title: 'Select Folder to Scan',
+      });
+
+      if (selected && typeof selected === 'string') {
+        setScanPath(selected);
+        setCurrentViewId(null);
+        await startScan(selected);
+      }
+    } catch (err) {
+      console.error('Dialog error:', err);
+    }
   };
 
-  // ── Phase 5 State ───────────────────────────────────────────────────────────
+  const handleDirClick = (node: FileNode) => {
+    setCurrentViewId(node.path);
+  };
 
-  const [viewHistory, setViewHistory] = useState<FileNode[]>([]);
-  const viewRoot = viewHistory.length > 0 ? viewHistory[viewHistory.length - 1] : tree;
+  const handleGoUp = useCallback(() => {
+    if (!viewNode || viewNode.path === scanPath) return;
+    const parentPath = getParentPath(viewNode.path);
+    setCurrentViewId(parentPath);
+  }, [viewNode, scanPath]);
 
-  const [hoveredRect, setHoveredRect] = useState<TreemapRect | null>(null);
-  const [mousePos, setMousePos] = useState({ x: 0, y: 0 });
-  const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
+  const handleBreadcrumbClick = (path: string) => {
+    setCurrentViewId(path);
+  };
 
-  const mainRef = useRef<HTMLElement>(null);
-  const [bounds, setBounds] = useState({ width: 0, height: 0 });
-
-  // ── Phase 6 State ───────────────────────────────────────────────────────────
-  const { filters, setFilters, clearFilters, activeCount } = useFilter();
-  const searchInputRef = useRef<HTMLInputElement>(null);
-  const [topFilesOpen, setTopFilesOpen] = useState(false);
-
-  // ── Phase 7 Sidebar & Storage ───────────────────────────────────────────────
-  const [drives, setDrives] = useState<DriveInfo[]>([]);
-  const [recentScans, setRecentScans] = useState<RecentScan[]>([]);
-
-  const scannedPercent = useMemo(() => {
-    if (!progress?.totalRecords || !progress?.processedRecords) return 0;
-    return Math.min(100, Math.round((progress.processedRecords / progress.totalRecords) * 100));
-  }, [progress?.totalRecords, progress?.processedRecords]);
-
-  const fetchDrives = useCallback(async () => {
-    try {
-      const res = await invoke<DriveInfo[]>("get_drives");
-      setDrives(res);
-    } catch (e) {
-      console.error("Failed to fetch drives", e);
-    }
-  }, []);
-
-  useEffect(() => {
-    console.log("[dusk/ui] App: Initial mount");
-    void fetchDrives();
-    try {
-      const storedScans = localStorage.getItem("dusk_recent_scans");
-      if (storedScans) setRecentScans(JSON.parse(storedScans));
-    } catch (e) {
-      console.error("Failed to load recent scans", e);
-    }
-  }, [fetchDrives]);
-
-  // Update recent scans when a scan finishes successfully
-  useEffect(() => {
-    if (!isScanning && progress?.done && tree) {
-      setRecentScans(prev => {
-        const item = { path: tree.path, time: Date.now(), size: progress.total_size };
-        const filtered = prev.filter(r => r.path !== item.path);
-        const next = [item, ...filtered].slice(0, 5);
-        localStorage.setItem("dusk_recent_scans", JSON.stringify(next));
-        return next;
-      });
-    }
-  }, [isScanning, progress?.done, progress?.total_size, tree]);
-
-  // Keyboard bindings
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Cmd+F or Ctrl+F
-      if ((e.metaKey || e.ctrlKey) && e.key === "f") {
-        e.preventDefault(); 
-        searchInputRef.current?.focus();
-      }
-      // Cmd+, or Ctrl+, for Settings
-      if ((e.metaKey || e.ctrlKey) && e.key === ",") {
-        e.preventDefault();
-        setSettingsOpen(s => !s);
-      }
+      if (e.key === 'Backspace') handleGoUp();
     };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, []);
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [handleGoUp]);
 
-  // ── Actions ─────────────────────────────────────────────────────────────────
-
-  async function handleScanDialog() {
-    if (isScanning) {
-      await cancelScan();
-      return;
-    }
-
-    const selected = await openDialog({
-      directory: true,
-      multiple: false,
-      title: "Choose a folder to scan",
-    });
-
-    if (typeof selected === "string" && selected.length > 0) {
-      setViewHistory([]); // Reset drill-down on new scan
-      setContextMenu(null);
-      await startScan(selected);
-    }
+  // Hybrid Progress Logic
+  let progressPercent: number | null = null;
+  let progressLabel = 'Scanning...';
+  
+  if (progress?.totalRecords && progress?.processedRecords) {
+    // Case 1: MFT (accurate count)
+    progressPercent = Math.min(100, Math.round((progress.processedRecords / progress.totalRecords) * 100));
+    progressLabel = `Analyzing MFT Index ${progressPercent}%`;
+  } else if (estimatedTotalSize && progress?.total_size) {
+    // Case 2: Volume Root Heuristic (used space)
+    progressPercent = Math.min(100, Math.round((progress.total_size / estimatedTotalSize) * 100));
+    progressLabel = `Probing Volume ${progressPercent}%`;
+  } else if (isScanning) {
+    // Case 3: Subdirectory (Indeterminate)
+    progressPercent = null;
+    progressLabel = `Discovering items...`;
   }
 
-  // ── Size & Treemap Calculation ──────────────────────────────────────────────
-
-  useEffect(() => {
-    if (!mainRef.current) return;
-    const ro = new ResizeObserver((entries) => {
-      const { width, height } = entries[0].contentRect;
-      if (width && height) {
-        setBounds({ width, height });
-      }
-    });
-    ro.observe(mainRef.current);
-    return () => ro.disconnect();
-  }, []);
-
-  const filteredViewRoot = useMemo(() => {
-    if (!viewRoot) return null;
-    return filterTree(viewRoot, filters);
-  }, [viewRoot, filters]);
-
-  const rects = useMemo(() => {
-    if (!filteredViewRoot || bounds.width === 0 || bounds.height === 0) return undefined;
-    
-    // Performance Guard: While scanning huge drives, avoid re-layouting every frame.
-    // If we have >100k nodes and the scan is active, we let the memo settle.
-    // However, computerTreemap is O(N) but can still be heavy on the JS thread.
-    return computeTreemap(
-      filteredViewRoot,
-      { x: 0, y: 0, width: bounds.width, height: bounds.height },
-      { colorMap: DEFAULT_COLOR_MAP, minBlockSize: settings.minBlockSize }
-    );
-  }, [filteredViewRoot, bounds, settings.minBlockSize]);
-
-  // ── Interactions ────────────────────────────────────────────────────────────
-
-  const handleMouseMove = useCallback((e: MouseEvent) => {
-    setMousePos({ x: e.clientX, y: e.clientY });
-  }, []);
-
-  const handleContextMenu = useCallback((e: MouseEvent) => {
-    if (hoveredRect) {
-      e.preventDefault();
-      setContextMenu({ x: e.clientX, y: e.clientY, rect: hoveredRect });
-    }
-  }, [hoveredRect]);
-
-  const [lastClick, setLastClick] = useState<{ id: string; time: number } | null>(null);
-  const handleRectClick = useCallback((rect: TreemapRect) => {
-    const now = Date.now();
-    if (lastClick && lastClick.id === rect.id && now - lastClick.time < 300) {
-      // Double click
-      if (rect.kind === "dir") {
-        if (viewRoot?.children) {
-           const node = viewRoot.children.find(n => n.id === rect.id);
-           if (node) {
-             setViewHistory([...viewHistory, node]);
-             setContextMenu(null);
-             setHoveredRect(null);
-           }
-        }
-      }
-      setLastClick(null);
-    } else {
-      setLastClick({ id: rect.id, time: now });
-    }
-  }, [lastClick, viewRoot, viewHistory]);
-
-  const handleCrumbClick = (index: number) => {
-    if (index === -1) {
-      setViewHistory([]); // Go to root
-    } else {
-      setViewHistory(viewHistory.slice(0, index + 1));
-    }
-    setContextMenu(null);
-    setHoveredRect(null);
-  };
-
-  // Backspace keybinding for popping view history
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      // Don't pop if context menu or settings or top files is open, or focused input
-      if (e.key === "Backspace" && viewHistory.length > 0 && !contextMenu && !settingsOpen && !topFilesOpen) {
-        if (document.activeElement?.tagName === "INPUT") return;
-        setViewHistory((prev) => prev.slice(0, -1));
-        setHoveredRect(null);
-      }
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [viewHistory.length, contextMenu, settingsOpen, topFilesOpen]);
-
-  // ── Derived display values ───────────────────────────────────────────────────
-
-  const scanButtonLabel = isScanning ? "Cancel Scan" : "Scan Folder";
-  const scanButtonClass = isScanning
-    ? "rounded-full bg-red-600/80 px-5 py-2 text-sm font-semibold text-white shadow-lg hover:brightness-110"
-    : "rounded-full bg-[rgb(var(--accent-video))] px-5 py-2 text-sm font-semibold text-white shadow-lg shadow-indigo-900/30 hover:brightness-110";
-
-  const activeCrumbs = [
-    { name: tree?.path || "No scan active", index: -1 }
-  ];
-  viewHistory.forEach((node, i) => {
-    activeCrumbs.push({ name: node.name, index: i });
-  });
-
-  // ── Render ───────────────────────────────────────────────────────────────────
+  const formatMs = (ms: number) => (ms / 1000).toFixed(1) + 's';
 
   return (
-    <div className="relative min-h-screen overflow-hidden bg-app text-primary">
-      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_15%_10%,rgba(99,102,241,0.18),transparent_26%),radial-gradient(circle_at_80%_0%,rgba(16,185,129,0.12),transparent_22%),linear-gradient(180deg,rgba(15,23,42,0.22),transparent_40%)]" />
+    <div className="flex h-screen bg-gray-950 text-white font-sans overflow-hidden">
+      {/* Sidebar */}
+      <aside className="w-56 bg-gray-900 border-r border-gray-800 flex flex-col pt-6 shrink-0">
+        <div className="px-6 mb-8 group cursor-default">
+          <h1 className="text-2xl font-black tracking-tighter text-white group-hover:text-emerald-400 transition-colors">Dusk</h1>
+          <p className="text-[10px] text-gray-500 uppercase tracking-widest mt-1 font-bold">Disk Space Analyzer</p>
+        </div>
 
-      <div className="relative flex min-h-screen p-4">
-        {/* ── Sidebar ── */}
-        <motion.aside
-          animate={{ width: sidebarCollapsed ? 88 : 256 }}
-          className="glass-panel relative flex shrink-0 flex-col overflow-hidden rounded-[28px]"
-          transition={{ duration: 0.25, ease: "easeInOut" }}
-        >
-          <div className="flex items-center justify-between border-b border-border-soft px-5 py-4">
-            <div className={sidebarCollapsed ? "hidden" : "block"}>
-              <p className="text-xs uppercase tracking-[0.35em] text-muted">
-                Dusk
-              </p>
-              <h1 className="mt-2 text-2xl font-semibold tracking-tight">
-                Disk Atlas
-              </h1>
-            </div>
+        <nav className="flex-1 px-4 space-y-2">
+          <button
+            onClick={handleScan}
+            disabled={isScanning}
+            className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-semibold transition-all shadow-lg ${
+              isScanning 
+                ? 'bg-gray-800 text-gray-500 cursor-not-allowed border border-gray-700' 
+                : 'bg-emerald-600 hover:bg-emerald-500 active:scale-[0.98] text-white shadow-emerald-700/20'
+            }`}
+          >
+            <span className="text-lg">{isScanning ? '⏳' : '🔍'}</span>
+            <span>{isScanning ? 'Working...' : 'Scan Folder'}</span>
+          </button>
 
+          {isScanning && (
             <button
-              aria-label={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
-              className="rounded-full border border-border-soft bg-white/10 p-2 text-sm text-primary hover:bg-white/15 focus:ring-2 focus:ring-indigo-500/50 outline-none"
-              onClick={() => setSidebarCollapsed((v) => !v)}
-              type="button"
+              onClick={cancelScan}
+              className="w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-semibold bg-red-950/20 hover:bg-red-900/30 text-red-500 transition-all border border-red-900/20 active:scale-[0.98]"
             >
-              {sidebarCollapsed ? "»" : "«"}
+              <span className="text-lg">⏹</span>
+              <span>Cancel Scan</span>
             </button>
+          )}
+        </nav>
+
+        {scanPath && (
+          <div className="p-4 border-t border-gray-800 bg-gray-950/30">
+            <p className="text-[9px] text-gray-500 uppercase font-bold mb-1 tracking-wider">Target Target</p>
+            <p className="text-[11px] truncate text-gray-400 font-mono leading-tight" title={scanPath}>{scanPath}</p>
           </div>
+        )}
+      </aside>
 
-          <div className="flex-1 space-y-6 overflow-y-auto px-4 py-5 scrollbar-thin scrollbar-thumb-white/10 scrollbar-track-transparent">
-            {/* Storage Drives */}
-            <section>
-              <div className="flex items-center justify-between mb-3">
-                <p className={`text-xs uppercase tracking-[0.3em] text-muted ${sidebarCollapsed ? "sr-only" : ""}`}>
-                  Drives
-                </p>
-                {!sidebarCollapsed && (
-                  <button onClick={fetchDrives} className="text-xs text-muted hover:text-primary transition-colors">⟳</button>
-                )}
-              </div>
-              <motion.div 
-                className="space-y-2"
-                initial="hidden"
-                animate="visible"
-                variants={{
-                  hidden: { opacity: 0 },
-                  visible: { opacity: 1, transition: { staggerChildren: 0.05 } }
-                }}
-              >
-                {drives.map(drive => {
-                  const usedItem = drive.total_space - drive.available_space;
-                  const ratio = usedItem / drive.total_space;
-                  return (
-                    <motion.button
-                      variants={{ hidden: { opacity: 0, y: 5 }, visible: { opacity: 1, y: 0 } }}
-                      key={drive.mount_point}
-                      onClick={() => {
-                        setViewHistory([]);
-                        void startScan(drive.mount_point);
-                      }}
-                      className="w-full text-left rounded-2xl border border-transparent bg-white/5 p-3 hover:border-border-soft hover:bg-white/10 transition-colors focus:ring-2 focus:ring-indigo-500/50 outline-none"
-                    >
-                      <div className="flex items-center gap-3">
-                        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-slate-900/70 text-[11px] font-semibold text-slate-100">
-                          {drive.mount_point.replace(/\\/g, '')}
-                        </span>
-                        {!sidebarCollapsed && (
-                          <div className="flex-1 min-w-0">
-                            <p className="truncate text-sm font-medium">{drive.name}</p>
-                            <p className="text-[10px] text-muted font-mono">{formatBytes(drive.available_space)} free of {formatBytes(drive.total_space)}</p>
-                          </div>
-                        )}
-                      </div>
-                      {!sidebarCollapsed && (
-                        <div className="mt-2 h-1 w-full overflow-hidden rounded-full bg-black/40">
-                          <div className="h-full bg-indigo-500" style={{ width: `${ratio * 100}%` }} />
-                        </div>
-                      )}
-                    </motion.button>
-                  );
-                })}
-              </motion.div>
-            </section>
+      {/* Main Content Area */}
+      <main className="flex-1 flex flex-col min-w-0 relative">
+        {viewNode && (
+          <Breadcrumb 
+            path={viewNode.path} 
+            onSegmentClick={handleBreadcrumbClick} 
+          />
+        )}
+        
+        <FileList 
+          viewRoot={viewNode || null} 
+          onDirClick={handleDirClick} 
+        />
 
-            {/* Quick Access */}
-            <section>
-              <p
-                className={`mb-3 text-xs uppercase tracking-[0.3em] text-muted ${sidebarCollapsed ? "sr-only" : ""}`}
-              >
-                Quick Access
-              </p>
-              <div className="space-y-2">
-                {QUICK_ACCESS.map((item) => (
-                  <button
-                    key={item.label}
-                    className="flex w-full items-center gap-3 rounded-2xl border border-transparent bg-white/5 px-3 py-3 text-left text-sm text-primary hover:border-border-soft hover:bg-white/10 focus:ring-2 focus:ring-indigo-500/50 outline-none transition-colors"
-                    onClick={() => {
-                      setViewHistory([]);
-                      void startScan(item.label);
-                    }}
-                    type="button"
-                  >
-                    <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-slate-900/70 text-[11px] font-semibold text-slate-100">
-                      {item.abbr}
-                    </span>
-                    {!sidebarCollapsed && (
-                      <span className="truncate text-sm">{item.label}</span>
-                    )}
-                  </button>
-                ))}
-              </div>
-            </section>
-
-            {/* Recent Scans */}
-            {recentScans.length > 0 && !sidebarCollapsed && (
-              <section>
-                <p className="mb-3 text-xs uppercase tracking-[0.3em] text-muted">
-                  Recent Scans
-                </p>
-                <div className="space-y-1">
-                  {recentScans.map((r, i) => (
-                    <button
-                      key={i}
-                      onClick={() => {
-                        setViewHistory([]);
-                        void startScan(r.path);
-                      }}
-                      className="group flex w-full items-center justify-between rounded-lg px-2 py-1.5 hover:bg-white/5 focus:ring-2 focus:ring-indigo-500/50 outline-none transition-colors"
-                    >
-                      <div className="flex flex-col text-left truncate flex-1 min-w-0 mr-2">
-                        <span className="truncate text-xs text-primary">{r.path}</span>
-                        <span className="text-[10px] text-muted font-mono">{new Date(r.time).toLocaleDateString()}</span>
-                      </div>
-                      <span className="text-[10px] font-mono text-indigo-300 opacity-60 group-hover:opacity-100 shrink-0">
-                        {formatBytes(r.size)}
-                      </span>
-                    </button>
-                  ))}
-                </div>
-              </section>
-            )}
-          </div>
-
-          <div className="border-t border-border-soft px-4 py-4 flex flex-col gap-2">
-            <button
-              className="flex w-full items-center justify-between rounded-2xl border border-border-soft bg-white/5 px-4 py-3 text-sm hover:bg-white/10 focus:ring-2 focus:ring-indigo-500/50 outline-none transition-colors"
-              onClick={() => setSettingsOpen(true)}
-              type="button"
-            >
-              {!sidebarCollapsed ? (
-                <>
-                  <span>Settings</span>
-                  <span className="text-muted text-xs border border-white/10 rounded px-1.5 py-0.5">⌘,</span>
-                </>
-              ) : (
-                <span className="mx-auto">⚙</span>
-              )}
-            </button>
-            <button
-              className="flex w-full items-center justify-between rounded-2xl border border-border-soft bg-white/5 px-4 py-3 text-sm hover:bg-white/10 focus:ring-2 focus:ring-indigo-500/50 outline-none transition-colors"
-              onClick={cycleTheme}
-              type="button"
-            >
-              {!sidebarCollapsed ? (
-                <>
-                  <span>Theme: {themeMode}</span>
-                  <span className="text-muted">{resolvedTheme}</span>
-                </>
-              ) : (
-                <span className="mx-auto">
-                  {resolvedTheme === "dark" ? "◐" : "◑"}
+        {/* Improved Status Bar */}
+        {(isScanning || (progress?.scanned || 0) > 0) && (
+          <div className="absolute bottom-0 left-0 right-0 bg-gray-900/95 backdrop-blur-xl border-t border-gray-800 px-6 py-4 flex flex-col gap-3 z-20 shadow-[0_-10px_40px_rgba(0,0,0,0.6)]">
+            <div className="flex items-center justify-between text-[10px]">
+              <div className="flex items-center gap-4 min-w-0">
+                <span className="flex items-center gap-2 shrink-0">
+                  <span className={`w-2 h-2 rounded-full ${isScanning ? 'bg-emerald-500 animate-pulse' : 'bg-gray-600'}`}></span>
+                  <span className="font-bold uppercase tracking-wider">
+                    {isScanning ? progressLabel : `Scan Finished in ${formatMs(duration || elapsedTime)}`}
+                  </span>
                 </span>
-              )}
-            </button>
-          </div>
-        </motion.aside>
-
-        {/* ── Main column ── */}
-        <div className="ml-4 flex min-w-0 flex-1 flex-col gap-4">
-          {/* Toolbar */}
-          <header className="glass-panel flex items-center justify-between rounded-[28px] px-6 py-4">
-            <div className="min-w-0 flex items-center">
-              <div>
-                <p className="text-xs uppercase tracking-[0.35em] text-muted">
-                  Workspace
-                </p>
-                <div className="mt-2 flex items-center gap-2 overflow-hidden text-sm text-muted">
-                  {activeCrumbs.map((crumb, idx) => (
-                    <span key={idx} className="flex items-center gap-2 shrink-0">
-                      {idx > 0 && <span>/</span>}
-                      <button 
-                        onClick={() => handleCrumbClick(crumb.index)}
-                        className="truncate rounded-full bg-white/5 px-3 py-1 text-primary hover:bg-white/10 focus:ring-2 focus:ring-indigo-500/50 outline-none transition-colors max-w-[200px]"
-                      >
-                        {crumb.name}
-                      </button>
-                    </span>
-                  ))}
-                </div>
-              </div>
-            </div>
-
-            <div className="flex items-center flex-col items-end shrink-0 gap-3">
-              <div className="flex items-center gap-3">
-                <button
-                  onClick={() => setTopFilesOpen(true)}
-                  className="rounded-full border border-border-soft bg-white/5 px-4 py-2 text-sm text-primary hover:bg-white/10 focus:ring-2 focus:ring-indigo-500/50 outline-none transition-colors"
-                >
-                  Top 50 Files
-                </button>
-                <button
-                  onClick={() => setShowDebug(!showDebug)}
-                  className={`rounded-full border px-4 py-2 text-sm transition-colors ${
-                    showDebug ? "bg-indigo-500/20 border-indigo-500/40 text-indigo-200" : "bg-white/5 border-border-soft text-primary hover:bg-white/10"
-                  }`}
-                >
-                  {showDebug ? "Hide Debug" : "Show Debug"}
-                </button>
-                <AnimatePresence>
-                  {isScanning && method && (
-                    <motion.div
-                      animate={{ opacity: 1, x: 0 }}
-                      className="flex items-center gap-1.5 rounded-full bg-white/5 border border-white/10 px-3 py-1 text-xs"
-                      exit={{ opacity: 0, x: 8 }}
-                      initial={{ opacity: 0, x: 8 }}
-                    >
-                      <span className="text-indigo-400">{method === 'mft' ? '⚡ Fast Scan (MFT)' : '🔍 Standard Scan'}</span>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
-                <AnimatePresence>
-                  {isScanning && (
-                    <motion.div
-                      animate={{ opacity: 1 }}
-                      className="text-xs text-muted"
-                      exit={{ opacity: 0 }}
-                      initial={{ opacity: 0 }}
-                    >
-                      {progress?.current_path.split(/[/\\]/).at(-1) ?? "…"}
-                    </motion.div>
-                  )}
-                </AnimatePresence>
-
-                <button
-                  className={scanButtonClass}
-                  id="scan-button"
-                  onClick={() => void handleScanDialog()}
-                  type="button"
-                >
-                  <div className="flex items-center gap-2">
-                    {isScanning && (
-                      <motion.div
-                        animate={{ rotate: 360 }}
-                        className="h-3 w-3 rounded-full border border-white/30 border-t-white"
-                        transition={{ duration: 0.8, repeat: Infinity, ease: "linear" }}
-                      />
-                    )}
-                    {scanButtonLabel}
-                  </div>
-                </button>
+                <span className="text-gray-800 shrink-0">|</span>
+                <span className="text-gray-500 truncate font-mono italic" title={progress?.current_path}>
+                   {isScanning ? (progress?.current_path || 'Initializing stream...') : `Processed ${formatCount(progress?.scanned || 0)} objects`}
+                </span>
               </div>
               
-              {!isScanning && progress?.done && (
-                  <div className="text-[10px] text-muted text-right tracking-tight">
-                    Finished {formatCount(progress.scanned)} files · {formatBytes(progress.total_size)}
-                  </div>
-              )}
-            </div>
-          </header>
-
-          <FilterBar
-            filters={filters}
-            setFilters={setFilters}
-            clearFilters={clearFilters}
-            activeCount={activeCount}
-            searchInputRef={searchInputRef}
-          />
-
-          {/* Main canvas area — TreemapCanvas fills this completely */}
-          <main
-            ref={mainRef}
-            className="glass-panel relative flex min-h-[420px] flex-1 overflow-hidden rounded-[32px]"
-            id="treemap-main"
-            onMouseMove={handleMouseMove}
-            onContextMenu={handleContextMenu}
-          >
-            {/* Subtle gradient overlay behind the canvas */}
-            <div className="pointer-events-none absolute inset-0 z-0 bg-[linear-gradient(135deg,rgba(99,102,241,0.10),transparent_35%),linear-gradient(315deg,rgba(6,182,212,0.09),transparent_28%)]" />
-
-            {/* TreemapCanvas wrap with Framer Motion for drill-down animation */}
-            <motion.div
-              className="absolute inset-0 z-10"
-              key={viewRoot?.id ?? "empty"}
-              initial={{ opacity: 0, scale: 0.95 }}
-              animate={{ opacity: 1, scale: 1 }}
-              transition={{ duration: 0.2, ease: "easeOut" }}
-            >
-              <TreemapCanvas 
-                rects={rects} 
-                onHover={setHoveredRect} 
-                onClick={handleRectClick} 
-              />
-            </motion.div>
-
-            {/* Error banners & Placeholders float above canvas */}
-            <AnimatePresence>
-              {error && (
-                <motion.div
-                  animate={{ opacity: 1, y: 0 }}
-                  className="absolute left-4 right-4 top-4 z-30 rounded-2xl border border-yellow-500/30 bg-yellow-500/10 px-5 py-3 text-sm text-yellow-300 backdrop-blur-sm"
-                  exit={{ opacity: 0, y: -8 }}
-                  initial={{ opacity: 0, y: -8 }}
-                >
-                  ⚠ {error}
-                </motion.div>
-              )}
-              {!isScanning && tree && filteredViewRoot && (!filteredViewRoot.children || filteredViewRoot.children.length === 0) && (
-                <motion.div
-                  animate={{ opacity: 1 }}
-                  className="absolute inset-0 z-20 flex items-center justify-center bg-black/20 backdrop-blur-sm"
-                  exit={{ opacity: 0 }}
-                  initial={{ opacity: 0 }}
-                >
-                  <div className="text-center">
-                    <p className="text-lg font-semibold text-primary">Directory is empty</p>
-                    <p className="text-sm text-muted mt-2">No matching files found here.</p>
-                  </div>
-                </motion.div>
-              )}
-            </AnimatePresence>
-
-            {/* Scan progress bar — floats at bottom of canvas */}
-            <AnimatePresence>
-              {isScanning && (
-                <motion.div
-                  animate={{ opacity: 1 }}
-                  className="absolute bottom-0 left-0 right-0 z-30 h-1 overflow-hidden bg-white/5 backdrop-blur-sm"
-                  exit={{ opacity: 0 }}
-                  initial={{ opacity: 0 }}
-                >
-                  <motion.div
-                    className="h-full bg-gradient-to-r from-indigo-500 to-cyan-400 shadow-[0_0_8px_rgba(99,102,241,0.6)]"
-                    initial={{ width: "0%" }}
-                    animate={{ 
-                      width: scannedPercent > 0 ? `${scannedPercent}%` : "30%",
-                      x: scannedPercent > 0 ? 0 : ["-100%", "200%"] 
-                    }}
-                    transition={{ 
-                      width: { duration: 0.5, ease: "easeOut" },
-                      x: scannedPercent > 0 ? { duration: 0 } : { duration: 2, repeat: Infinity, ease: "linear" }
-                    }}
-                  />
-                </motion.div>
-              )}
-            </AnimatePresence>
-
-            {/* Scan overlay — shown while scanning, or briefly when finished */}
-            <AnimatePresence>
-              {(isScanning || (progress?.done && !isScanning)) && progress && (
-                <motion.div
-                  animate={{ opacity: 1, scale: 1 }}
-                  className={`pointer-events-none absolute left-6 top-6 z-30 rounded-2xl border px-5 py-4 backdrop-blur-md shadow-2xl ${
-                    isScanning ? "border-indigo-500/30 bg-black/60" : "border-emerald-500/30 bg-emerald-950/40"
-                  }`}
-                  exit={{ opacity: 0, scale: 0.95 }}
-                  initial={{ opacity: 0, scale: 0.95 }}
-                >
-                  <div className="flex items-center gap-3">
-                    {isScanning ? (
-                      <div className="relative flex h-2 w-2">
-                        <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-indigo-400 opacity-75"></span>
-                        <span className="relative inline-flex h-2 w-2 rounded-full bg-indigo-500"></span>
-                      </div>
-                    ) : (
-                      <span className="text-emerald-400 text-lg">✓</span>
-                    )}
-                    <div>
-                      <p className="text-[10px] uppercase tracking-[0.25em] text-muted leading-tight">
-                        {isScanning ? "Scanning Activity" : "Scan Completed"}
-                      </p>
-                      <p className="mt-1 font-mono text-base font-semibold text-primary">
-                        {formatCount(progress.scanned)} <span className="text-xs font-normal text-muted">files</span> · {formatBytes(progress.total_size)}
-                      </p>
-                      {isScanning && (
-                        <p className="mt-1.5 truncate text-[10px] text-muted max-w-[240px] italic">
-                          {progress.current_path.split(/[/\\]/).slice(-2).join('/')}
-                        </p>
-                      )}
-                    </div>
-                  </div>
-                </motion.div>
-              )}
-            </AnimatePresence>
-          </main>
-        </div>
-      </div>
-      
-      {/* Portals / Modals / Tooltips (rendered outside the canvas div to avoid clipping) */}
-      {!contextMenu && <Tooltip rect={hoveredRect} position={mousePos} totalSize={filteredViewRoot?.size ?? 0} />}
-      <ContextMenu state={contextMenu} onClose={() => setContextMenu(null)} />
-      
-      <TopFilesPanel
-        isOpen={topFilesOpen}
-        onClose={() => setTopFilesOpen(false)}
-        tree={tree}
-        onFileClick={(_file, parentPath) => {
-          let targetParent: FileNode | null = null;
-          if (tree) {
-            const queue = [tree];
-            while (queue.length > 0) {
-              const node = queue.shift()!;
-              if (node.path === parentPath) {
-                targetParent = node;
-                break;
-              }
-              if (node.children) {
-                for (const child of node.children) queue.push(child);
-              }
-            }
-          }
-
-          if (targetParent && tree) {
-            setViewHistory([tree, targetParent]);
-          }
-          setTopFilesOpen(false);
-        }}
-      />
-
-      <SettingsPanel
-        isOpen={settingsOpen}
-        onClose={() => setSettingsOpen(false)}
-        settings={settings}
-        setSettings={setSettings}
-      />
-
-      {/* Debug Console Overlay */}
-      <AnimatePresence>
-        {showDebug && (
-          <motion.div
-            initial={{ y: 300, opacity: 0 }}
-            animate={{ y: 0, opacity: 1 }}
-            exit={{ y: 300, opacity: 0 }}
-            className="fixed bottom-6 right-6 z-[100] w-[450px] overflow-hidden rounded-3xl border border-white/10 bg-black/80 shadow-2xl backdrop-blur-xl"
-          >
-            <div className="flex items-center justify-between border-b border-white/5 bg-white/5 px-5 py-3">
-              <div className="flex items-center gap-2">
-                <span className="h-2 w-2 rounded-full bg-indigo-500 animate-pulse" />
-                <span className="text-xs font-bold uppercase tracking-widest text-indigo-300">Live Debug Scan Log</span>
-              </div>
-              <button 
-                onClick={() => setShowDebug(false)}
-                className="text-muted hover:text-primary p-1"
-              >
-                ✕
-              </button>
-            </div>
-            <div className="max-h-[300px] overflow-y-auto p-4 font-mono text-[10px] leading-relaxed">
-              {eventLog.length === 0 ? (
-                <div className="py-10 text-center text-muted italic">No active scan events...</div>
-              ) : (
-                <div className="flex flex-col gap-1.5 grayscale opacity-80 hover:grayscale-0 hover:opacity-100 transition-all">
-                  {eventLog.slice(0, 50).map((log, i) => (
-                    <div key={i} className="flex gap-3 border-b border-white/[0.03] pb-1">
-                      <span className="text-indigo-400 shrink-0">[{new Date(log.timestamp).toLocaleTimeString()}]</span>
-                      <span className="text-emerald-400 font-bold shrink-0">{log.type}</span>
-                      <span className="text-primary truncate">{JSON.stringify(log.payload)}</span>
-                    </div>
-                  ))}
+              <div className="flex gap-4 shrink-0 font-mono">
+                <div className="text-right">
+                  <p className="text-gray-600 uppercase text-[8px] font-black leading-none mb-0.5">Objects</p>
+                  <p className="text-white font-bold">{formatCount(progress?.scanned || 0)}</p>
                 </div>
-              )}
+                <div className="text-right min-w-[60px]">
+                  <p className="text-gray-600 uppercase text-[8px] font-black leading-none mb-0.5">Size</p>
+                  <p className="text-emerald-400 font-bold">{formatBytes(progress?.total_size || 0)}</p>
+                </div>
+                <div className="text-right min-w-[50px]">
+                  <p className="text-gray-600 uppercase text-[8px] font-black leading-none mb-0.5">Time</p>
+                  <p className="text-blue-400 font-bold">{formatMs(elapsedTime)}</p>
+                </div>
+              </div>
             </div>
-          </motion.div>
+
+            {isScanning && (
+              <div className="w-full h-1 bg-gray-800 rounded-full overflow-hidden relative">
+                <div 
+                  className={`absolute inset-y-0 left-0 bg-gradient-to-r from-emerald-600 to-emerald-400 rounded-full transition-all duration-700 ease-in-out shadow-[0_0_12px_rgba(16,185,129,0.5)] ${!progressPercent ? 'animate-progress-indeterminate' : ''}`}
+                  style={{ 
+                    width: progressPercent ? `${progressPercent}%` : '40%',
+                  }}
+                />
+              </div>
+            )}
+          </div>
         )}
-      </AnimatePresence>
+      </main>
+
+      <style dangerouslySetInnerHTML={{ __html: `
+        @keyframes progress-indeterminate {
+          0% { left: -40%; width: 40%; }
+          50% { width: 60%; }
+          100% { left: 100%; width: 40%; }
+        }
+        .animate-progress-indeterminate {
+          animation: progress-indeterminate 1.8s infinite ease-in-out;
+        }
+      `}} />
     </div>
   );
-}
+};
+
+export default App;

@@ -1,9 +1,13 @@
-use std::sync::{
-    atomic::Ordering,
-    mpsc,
-    Arc,
+use std::{
+    sync::{
+        atomic::Ordering,
+        mpsc,
+        Arc,
+    },
+    time::Duration,
 };
 
+use serde_json::json;
 use tauri::{AppHandle, Emitter, State};
 
 use sysinfo::Disks;
@@ -27,16 +31,22 @@ pub async fn scan_directory(
     app: AppHandle,
     state: State<'_, ScanState>,
 ) -> Result<(), String> {
+    println!("\n[dusk/core] 📥 RECEIVED SCAN REQUEST");
+    println!("[dusk/core] path:    {}", path);
+    println!("[dusk/core] options: {:?}", options);
+
     // Reset cancel flag for the new scan.
     state.cancel.store(false, Ordering::Relaxed);
     let cancel = Arc::clone(&state.cancel);
 
     tokio::task::spawn_blocking(move || {
+        println!("[dusk/core] 🚀 Launching scanner thread...");
         // Boot the scanner factory
         let (scanner, method) = create_scanner(&path, options.clone());
+        println!("[dusk/core] 🛠 Scanner selected: {}", method);
 
         // Emit scan start event
-        let _ = app.emit("scan_start", serde_json::json!({ "method": method }));
+        let _ = app.emit("scan_start", json!({ "method": method }));
 
         let (tx, rx) = mpsc::channel();
 
@@ -44,6 +54,8 @@ pub async fn scan_directory(
         let app_clone = app.clone();
         std::thread::spawn(move || {
             for chunk in rx {
+                // Throttle: Ensure the WebView has time to process the last batch
+                std::thread::sleep(Duration::from_millis(15));
                 if let Err(e) = app_clone.emit("scan_chunk", &chunk) {
                     eprintln!("[dusk/cmd] emit error: {e}");
                 }
@@ -68,7 +80,7 @@ pub async fn scan_directory(
                     current_scanner = fallback_scanner;
                     
                     // Notify frontend of method change
-                    let _ = app.emit("scan_start", serde_json::json!({ "method": "walkdir" }));
+                    let _ = app.emit("scan_start", json!({ "method": "walkdir" }));
                     continue;
                 }
                 Err(e) => {

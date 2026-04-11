@@ -1,249 +1,165 @@
-import { useCallback, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { FileNode, ScanChunk, ScanProgress } from "../types";
-import type { Settings } from "./useSettings";
+import { useState, useCallback, useRef, useEffect } from 'react';
+import { invoke } from '@tauri-apps/api/core';
+import { listen, UnlistenFn } from '@tauri-apps/api/event';
+import { FileNode, ScanProgress, ScanChunk, DriveInfo } from '../types';
+import { getParentPath } from '../lib/format';
 
-export interface UseScanReturn {
-  startScan: (path: string, options: Settings) => Promise<void>;
-  cancelScan: () => Promise<void>;
-  tree: FileNode | null;
-  progress: ScanProgress | null;
-  isScanning: boolean;
-  error: string | null;
-  method: "mft" | "walkdir" | null;
-  eventLog: Array<{ type: string; timestamp: number; payload: any }>;
-}
-
-// ── Constants ─────────────────────────────────────────────────────────────────
-
-/** Initial throttle interval for React state updates (ms). */
-const INITIAL_THROTTLE_MS = 300;
-/** Maximum throttle interval for massive scans (ms). */
-const MAX_THROTTLE_MS = 2500;
-
-// ── Hook ──────────────────────────────────────────────────────────────────────
-
-/**
- * Manages a Tauri disk scan session.
- *
- * Design notes:
- * - The flat node list is accumulated in a `useRef` (no re-renders per chunk).
- * - `setState` is called at most every THROTTLE_MS to update the UI.
- * - The hook owns unlisten cleanup — safe to call startScan() repeatedly.
- */
-export function useScan(): UseScanReturn {
-  const [tree, setTree] = useState<FileNode | null>(null);
-  const [progress, setProgress] = useState<ScanProgress | null>(null);
+export function useScan() {
   const [isScanning, setIsScanning] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [method, setMethod] = useState<"mft" | "walkdir" | null>(null);
-  const [eventLog, setEventLog] = useState<Array<{ type: string; timestamp: number; payload: any }>>([]);
+  const [progress, setProgress] = useState<ScanProgress | null>(null);
+  const [rootNode, setRootNode] = useState<FileNode | null>(null);
+  
+  // Timing & Estimations
+  const [duration, setDuration] = useState<number | null>(null);
+  const [elapsedTime, setElapsedTime] = useState(0);
+  const [estimatedTotalSize, setEstimatedTotalSize] = useState<number | null>(null);
 
-  // Flat accumulation buffer — never triggers renders.
-  const nodeBuffer = useRef<Map<string, FileNode>>(new Map());
+  const treeMapRef = useRef<Map<string, FileNode>>(new Map());
+  const bufferRef = useRef<FileNode[]>([]);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const unlistenRef = useRef<UnlistenFn | null>(null);
+  const startTimeRef = useRef<number | null>(null);
+  const tickerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const scanPathRef = useRef<string | null>(null);
 
-  // Throttle timer handle.
-  const throttleTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const flushBuffer = useCallback(() => {
+    if (bufferRef.current.length > 0) {
+      const newNodes = [...bufferRef.current];
+      bufferRef.current = [];
 
-  // Cleanup handles for Tauri event listeners.
-  const unlistenChunk = useRef<UnlistenFn | null>(null);
-  const unlistenError = useRef<UnlistenFn | null>(null);
-  const unlistenStart = useRef<UnlistenFn | null>(null);
+      const map = treeMapRef.current;
+      newNodes.forEach((node) => {
+        // ID-based lookup (O(1)) instead of heavy path string comparison
+        const existing = map.get(node.id);
+        
+        const nodeInTree = existing || { ...node, children: node.kind === 'dir' ? [] : undefined };
+        
+        if (!existing) {
+          map.set(node.id, nodeInTree);
 
-  // ── Internal helpers ────────────────────────────────────────────────────────
-
-  const cleanupListeners = useCallback(() => {
-    unlistenChunk.current?.();
-    unlistenError.current?.();
-    unlistenStart.current?.();
-    unlistenChunk.current = null;
-    unlistenError.current = null;
-    unlistenStart.current = null;
-  }, []);
-
-  const flushTree = useCallback((finalProgress: ScanProgress | null) => {
-    const nodes = Array.from(nodeBuffer.current.values());
-
-    if (nodes.length === 0) {
-      setTree(null);
-    } else {
-      // Optimization: Only sort if the list is reasonably small. 
-      // For massive scans, we rely on the backend order (mostly DFS) and child lookup.
-      if (nodes.length < 50000) {
-        nodes.sort((a, b) => a.path.length - b.path.length);
-      }
-
-      // 2. Build map of path -> FileNode representing the tree properly.
-      const treeMap = new Map<string, FileNode>();
-      let rootPath = finalProgress?.current_path ?? "";
-      
-      // If the scan root hasn't been emitted as a separate node yet, make sure we have a root.
-      // But usually walkdir gives the target folder path as the very first entry.
-      if (nodes.length > 0 && !rootPath) {
-         rootPath = nodes[0].path;
-      }
-      
-      for (const node of nodes) {
-        // Clone node because we will mutate children
-        const clonedNode = { ...node, children: node.kind === "dir" ? [] : undefined };
-        treeMap.set(node.path, clonedNode);
-      }
-
-      // 3. Re-parent the nodes.
-      let rootNode: FileNode | null = null;
-
-      for (const [path, node] of treeMap.entries()) {
-        // Simple heuristic: if this is exactly the root path (ignoring trailing slashes), it's the root.
-        if (rootPath && (path === rootPath || path + "\\" === rootPath || path + "/" === rootPath)) {
-          rootNode = node;
-          continue;
-        }
-
-        // Find parent path.
-        // It's everything up to the last slash.
-        let parentPath = path;
-        const lastSlash = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
-        if (lastSlash >= 0) {
-          parentPath = path.substring(0, lastSlash);
-          
-          // If Windows drive (C:\) was the parent, keep the slash.
-          if (parentPath.endsWith(':')) {
-            parentPath += path[lastSlash];
-          } else if (parentPath === "") {
-            // Root path /
-            parentPath = "/";
+          // Parent-ID based linking (O(1))
+          if (node.parentId) {
+            const parent = map.get(node.parentId);
+            if (parent && parent.kind === 'dir') {
+              if (!parent.children) parent.children = [];
+              parent.children.push(nodeInTree);
+              
+              // Lazy Path Reconstruction (only if path is empty)
+              if (!nodeInTree.path && parent.path) {
+                nodeInTree.path = `${parent.path}\\${nodeInTree.name}`;
+              }
+            }
           }
         } else {
-          // No slash found = must be relative path or itself a root. Fallback.
-          parentPath = "";
+          // Rust now sends the pre-aggregated recursive size. Just update.
+          nodeInTree.size = node.size;
+          nodeInTree.modified = node.modified;
         }
+      });
 
-        // If we can't find the exact parent, we fallback and attach it to the rootNode (or ignore).
-        const parentNode = treeMap.get(parentPath);
-        if (parentNode && parentNode.children) {
-          parentNode.children.push(node);
-        } else if (!rootNode && path === nodes[0].path) {
-          // If we never hit the exact root path, the shortest path is our fallback root.
-          rootNode = node;
-        } else if (rootNode && rootNode.children) {
-           rootNode.children.push(node); // Orphan fallback
-        }
+      // Performance Optimization: Set rootNode efficiently. 
+      // Instead of sorting all 2M nodes, we just look for the node matching our scan path.
+      if (!rootNode && scanPathRef.current) {
+        // Special case: Find root node by matching path if it was the entry point
+        // Or we can find by name if we know the root ID is "5"
+        const root = Array.from(map.values()).find(n => n.path === scanPathRef.current);
+        if (root) setRootNode(root);
       }
-
-      setTree(rootNode || treeMap.get(nodes[0].path) || null);
+      
+      // Force a slight re-render to update the UI with progress
+      setProgress(p => p ? { ...p } : null);
     }
-    if (finalProgress) setProgress(finalProgress);
-  }, []);
+  }, [rootNode]);
 
-  const scheduleFlush = useCallback(
-    (latestProgress: ScanProgress) => {
-      if (throttleTimer.current !== null) return; // already scheduled
-      
-      // Adaptive throttling: the more files, the slower the refresh to keep UI alive
-      const count = nodeBuffer.current.size;
-      const throttle = count > 100000 ? MAX_THROTTLE_MS : 
-                      count > 25000 ? 1000 : INITIAL_THROTTLE_MS;
+  const startScan = useCallback(async (path: string) => {
+    if (unlistenRef.current) unlistenRef.current();
+    if (timerRef.current) clearTimeout(timerRef.current);
+    if (tickerRef.current) clearInterval(tickerRef.current);
 
-      throttleTimer.current = setTimeout(() => {
-        throttleTimer.current = null;
-        flushTree(latestProgress);
-      }, throttle);
-    },
-    [flushTree],
-  );
+    setProgress(null);
+    setIsScanning(true);
+    setRootNode(null);
+    setDuration(null);
+    setElapsedTime(0);
+    setEstimatedTotalSize(null);
+    
+    const now = Date.now();
+    startTimeRef.current = now;
+    treeMapRef.current = new Map();
+    bufferRef.current = [];
+    scanPathRef.current = path;
 
-  // ── Public API ──────────────────────────────────────────────────────────────
-
-  const startScan = useCallback(
-    async (path: string, options: Settings) => {
-      // Clean up any previous session.
-      cleanupListeners();
-      if (throttleTimer.current) {
-        clearTimeout(throttleTimer.current);
-        throttleTimer.current = null;
-      }
-      nodeBuffer.current.clear();
-      setTree(null);
-      setProgress(null);
-      setError(null);
-      setIsScanning(true);
-      setMethod(null);
-      setEventLog([{ type: "START_REQUEST", timestamp: Date.now(), payload: { path } }]);
-
-      // Subscribe before invoking to avoid missing early chunks.
-      unlistenChunk.current = await listen<ScanChunk>("scan_chunk", (event) => {
-        setIsScanning(true);
-        const { nodes, progress: prog } = event.payload;
-
-        setEventLog(prev => [{ 
-          type: "CHUNK", 
-          timestamp: Date.now(), 
-          payload: { nodes: nodes.length, records: prog.processedRecords, done: prog.done } 
-        }, ...prev].slice(0, 50));
-
-        // Accumulate into the buffer (useRef → no re-render).
-        for (const node of nodes) {
-          nodeBuffer.current.set(node.id, node);
-        }
-
-        if (prog.done) {
-          // Final chunk — flush immediately, tear down session.
-          if (throttleTimer.current) {
-            clearTimeout(throttleTimer.current);
-            throttleTimer.current = null;
-          }
-          flushTree(prog);
-          setIsScanning(false);
-          cleanupListeners();
-        } else {
-          scheduleFlush(prog);
-        }
-      });
-
-      unlistenError.current = await listen<string>("scan_error", (event) => {
-        setError(event.payload);
-        setEventLog(prev => [{ type: "ERROR", timestamp: Date.now(), payload: event.payload }, ...prev].slice(0, 50));
-        setIsScanning(false);
-        cleanupListeners();
-      });
-
-      unlistenStart.current = await listen<{ method: "mft" | "walkdir" }>("scan_start", (event) => {
-        setMethod(event.payload.method);
-        setEventLog(prev => [{ type: "SCAN_START_ACK", timestamp: Date.now(), payload: event.payload }, ...prev].slice(0, 50));
-        // If this is a fallback restart, clear partial data
-        nodeBuffer.current.clear();
-        setTree(null);
-        setProgress(null);
-      });
-
+    // Hybrid Progress: Heuristic for Volume Roots
+    const isRoot = path === '/' || (path.length <= 3 && path.includes(':'));
+    if (isRoot) {
       try {
-        await invoke("scan_directory", { 
-          path, 
-          options: {
-            showCase: options.showHiddenFiles, // using camelCase for models.rs serde
-            showHiddenFiles: options.showHiddenFiles,
-            includeSystemFiles: options.includeSystemFiles,
-          }
-        });
+        const drives = await invoke<DriveInfo[]>('get_drives');
+        const drive = drives.find(d => path.startsWith(d.mount_point));
+        if (drive) {
+          setEstimatedTotalSize(drive.total_space - drive.available_space);
+        }
       } catch (err) {
-        setError(String(err));
-        setIsScanning(false);
-        cleanupListeners();
+        console.error('[useScan] Drive info error:', err);
       }
-    },
-    [cleanupListeners, flushTree, scheduleFlush],
-  );
+    }
+
+    tickerRef.current = setInterval(() => {
+      setElapsedTime(Date.now() - (startTimeRef.current || Date.now()));
+    }, 100);
+
+    const unlisten = await listen<ScanChunk>('scan_chunk', (event) => {
+      const { nodes: chunkNodes, progress: currentProgress } = event.payload;
+      
+      bufferRef.current.push(...chunkNodes);
+      setProgress(currentProgress);
+
+      if (!timerRef.current) {
+        timerRef.current = setTimeout(() => {
+          flushBuffer();
+          timerRef.current = null;
+        }, 300);
+      }
+
+      if (currentProgress.done) {
+        flushBuffer();
+        setIsScanning(false);
+        setDuration(Date.now() - (startTimeRef.current || Date.now()));
+        if (tickerRef.current) clearInterval(tickerRef.current);
+      }
+    });
+
+    unlistenRef.current = unlisten;
+
+    try {
+      await invoke('scan_directory', { 
+        path, 
+        options: { showHiddenFiles: false, includeSystemFiles: false } 
+      });
+    } catch (err) {
+      console.error('[useScan] Scan error:', err);
+      setIsScanning(false);
+      if (tickerRef.current) clearInterval(tickerRef.current);
+      unlisten();
+    }
+  }, [flushBuffer]);
 
   const cancelScan = useCallback(async () => {
     try {
-      await invoke("cancel_scan");
-    } catch {
-      // Ignore — scan may have already finished.
+      await invoke('cancel_scan');
+      setIsScanning(false);
+      if (tickerRef.current) clearInterval(tickerRef.current);
+    } catch (err) {
+      console.error('[useScan] Cancel error:', err);
     }
-    setIsScanning(false);
-    cleanupListeners();
-  }, [cleanupListeners]);
+  }, []);
 
-  return { startScan, cancelScan, tree, progress, isScanning, error, method, eventLog };
+  useEffect(() => {
+    return () => {
+      if (unlistenRef.current) unlistenRef.current();
+      if (timerRef.current) clearTimeout(timerRef.current);
+      if (tickerRef.current) clearInterval(tickerRef.current);
+    };
+  }, []);
+
+  return { isScanning, progress, rootNode, treeMap: treeMapRef.current, startScan, cancelScan, elapsedTime, duration, estimatedTotalSize };
 }

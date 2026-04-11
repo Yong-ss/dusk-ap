@@ -1,3 +1,12 @@
+// ── Drives ──────────────────────────────────────────────────────────────────
+
+export interface DriveInfo {
+  name: string;
+  mount_point: string;
+  total_space: number;
+  available_space: number;
+}
+
 // ── File system node ─────────────────────────────────────────────────────────
 
 export interface FileNode {

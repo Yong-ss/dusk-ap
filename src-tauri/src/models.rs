@@ -23,6 +23,8 @@ pub struct FileNode {
     pub id: String,
     pub name: String,
     pub path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<String>,
     /// Bytes. For directories this is the recursive total accumulated during scan.
     pub size: u64,
     pub kind: NodeKind,
