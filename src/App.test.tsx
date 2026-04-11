@@ -3,7 +3,7 @@ import App from "./App";
 import { ThemeProvider } from "./components/ThemeProvider";
 
 describe("App shell", () => {
-  it("renders the Dusk Phase 1 shell", () => {
+  it("renders the Dusk shell with treemap canvas mounted", () => {
     render(
       <ThemeProvider>
         <App />
@@ -12,6 +12,7 @@ describe("App shell", () => {
 
     expect(screen.getByText("Disk Atlas")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Scan Folder" })).toBeInTheDocument();
-    expect(screen.getByText("Treemap canvas mounts here")).toBeInTheDocument();
+    // TreemapCanvas renders its initializing overlay while the async renderer boots.
+    expect(screen.getByText("Benchmarking renderer…")).toBeInTheDocument();
   });
 });
