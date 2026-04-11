@@ -10,6 +10,10 @@ import ContextMenu, { ContextMenuState } from "./components/ContextMenu";
 import { computeTreemap } from "./lib/treemap";
 import { DEFAULT_COLOR_MAP } from "./lib/colormap";
 import type { FileNode, TreemapRect } from "./types";
+import { useFilter } from "./hooks/useFilter";
+import { filterTree } from "./lib/filter";
+import FilterBar from "./components/FilterBar";
+import TopFilesPanel from "./components/TopFilesPanel";
 
 // ── Static sidebar data ───────────────────────────────────────────────────────
 
@@ -38,6 +42,24 @@ export default function App() {
 
   const mainRef = useRef<HTMLElement>(null);
   const [bounds, setBounds] = useState({ width: 0, height: 0 });
+
+  // ── Phase 6 State ───────────────────────────────────────────────────────────
+  const { filters, setFilters, clearFilters, activeCount } = useFilter();
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const [topFilesOpen, setTopFilesOpen] = useState(false);
+
+  // Keyboard binding for Ctrl+F
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Cmd+F on Mac, Ctrl+F on Windows/Linux
+      if ((e.metaKey || e.ctrlKey) && e.key === "f") {
+        e.preventDefault(); // Prevent native browser search
+        searchInputRef.current?.focus();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
 
   // ── Actions ─────────────────────────────────────────────────────────────────
 
@@ -74,14 +96,19 @@ export default function App() {
     return () => ro.disconnect();
   }, []);
 
+  const filteredViewRoot = useMemo(() => {
+    if (!viewRoot) return null;
+    return filterTree(viewRoot, filters);
+  }, [viewRoot, filters]);
+
   const rects = useMemo(() => {
-    if (!viewRoot || bounds.width === 0 || bounds.height === 0) return undefined;
+    if (!filteredViewRoot || bounds.width === 0 || bounds.height === 0) return undefined;
     return computeTreemap(
-      viewRoot,
+      filteredViewRoot,
       { x: 0, y: 0, width: bounds.width, height: bounds.height },
       { colorMap: DEFAULT_COLOR_MAP }
     );
-  }, [viewRoot, bounds]);
+  }, [filteredViewRoot, bounds]);
 
   // ── Interactions ────────────────────────────────────────────────────────────
 
@@ -264,6 +291,12 @@ export default function App() {
 
             <div className="flex items-center flex-col items-end shrink-0 gap-3">
               <div className="flex items-center gap-3">
+                <button
+                  onClick={() => setTopFilesOpen(true)}
+                  className="rounded-full border border-border-soft bg-white/5 px-4 py-2 text-sm text-primary hover:bg-white/10 transition-colors"
+                >
+                  Top 50 Files
+                </button>
                 <AnimatePresence>
                   {isScanning && (
                     <motion.div
@@ -295,6 +328,14 @@ export default function App() {
               )}
             </div>
           </header>
+
+          <FilterBar
+            filters={filters}
+            setFilters={setFilters}
+            clearFilters={clearFilters}
+            activeCount={activeCount}
+            searchInputRef={searchInputRef}
+          />
 
           {/* Main canvas area — TreemapCanvas fills this completely */}
           <main
@@ -367,8 +408,39 @@ export default function App() {
       </div>
       
       {/* Portals / Modals / Tooltips (rendered outside the canvas div to avoid clipping) */}
-      {!contextMenu && <Tooltip rect={hoveredRect} position={mousePos} totalSize={viewRoot?.size ?? 0} />}
+      {!contextMenu && <Tooltip rect={hoveredRect} position={mousePos} totalSize={filteredViewRoot?.size ?? 0} />}
       <ContextMenu state={contextMenu} onClose={() => setContextMenu(null)} />
+      
+      <TopFilesPanel
+        isOpen={topFilesOpen}
+        onClose={() => setTopFilesOpen(false)}
+        tree={tree}
+        onFileClick={(_file, parentPath) => {
+          // Drill down logic: find the parent directory from the full tree to set as viewRoot
+          // Since find-by-path involves a recursive lookup from tree, we just do a quick breadth-first search.
+          let targetParent: FileNode | null = null;
+          if (tree) {
+            const queue = [tree];
+            while (queue.length > 0) {
+              const node = queue.shift()!;
+              if (node.path === parentPath) {
+                targetParent = node;
+                break;
+              }
+              if (node.children) {
+                for (const child of node.children) queue.push(child);
+              }
+            }
+          }
+
+          if (targetParent && tree) {
+            // this is simplified; we set the root. In Phase 5, viewHistory logic is flat or simple stack.
+            // If the user clicks a file, we set the viewRoot to that file's parent.
+            setViewHistory([tree, targetParent]);
+          }
+          setTopFilesOpen(false);
+        }}
+      />
     </div>
   );
 }
