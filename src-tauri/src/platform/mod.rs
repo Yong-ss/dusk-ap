@@ -34,16 +34,15 @@ pub trait Scanner: Send + Sync {
 /// Strategy (Phase 2):
 /// - Windows volume root + elevated →  WindowsMftScanner (stub — promotes to real in Phase 8)
 /// - Everything else               →  UniversalScanner (walkdir)
-pub fn create_scanner(path: &str, options: ScanOptions) -> Box<dyn Scanner> {
+pub fn create_scanner(path: &str, options: ScanOptions) -> (Box<dyn Scanner>, &'static str) {
     #[cfg(windows)]
     {
         if is_volume_root(path) && is_elevated() {
-            // Note: MFT stub doesn't use options yet
-            return Box::new(windows_mft::WindowsMftScanner::new());
+            return (Box::new(windows_mft::WindowsMftScanner::new()), "mft");
         }
     }
 
-    Box::new(universal::UniversalScanner::new(options))
+    (Box::new(universal::UniversalScanner::new(options)), "walkdir")
 }
 
 // ── Windows helpers (compile-time gated) ─────────────────────────────────────
@@ -57,8 +56,6 @@ fn is_volume_root(path: &str) -> bool {
 
 #[cfg(windows)]
 fn is_elevated() -> bool {
-    // Quick heuristic: try to open \\.\PHYSICALDRIVE0 for read — needs admin.
-    // For Phase 2 we keep it simple: always return false so MFT stub is never selected.
-    // Phase 8 will replace this with a proper IsUserAnAdmin() call.
-    false
+    // Phase 8: Proper IsUserAnAdmin() call.
+    unsafe { windows::Win32::UI::Shell::IsUserAnAdmin().into() }
 }

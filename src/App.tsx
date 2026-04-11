@@ -48,7 +48,7 @@ export default function App() {
   const { settings, setSettings } = useSettings();
   const [settingsOpen, setSettingsOpen] = useState(false);
 
-  const { startScan: rawStartScan, cancelScan, tree, progress, isScanning, error } = useScan();
+  const { startScan: rawStartScan, cancelScan, tree, progress, isScanning, error, method } = useScan();
 
   // Settings-aware startScan wrapper
   const startScan = async (path: string) => {
@@ -460,6 +460,18 @@ export default function App() {
                 >
                   Top 50 Files
                 </button>
+                <AnimatePresence>
+                  {isScanning && method && (
+                    <motion.div
+                      animate={{ opacity: 1, x: 0 }}
+                      className="flex items-center gap-1.5 rounded-full bg-white/5 border border-white/10 px-3 py-1 text-xs"
+                      exit={{ opacity: 0, x: 8 }}
+                      initial={{ opacity: 0, x: 8 }}
+                    >
+                      <span className="text-indigo-400">{method === 'mft' ? '⚡ Fast Scan (MFT)' : '🔍 Standard Scan'}</span>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
                 <AnimatePresence>
                   {isScanning && (
                     <motion.div

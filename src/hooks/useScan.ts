@@ -11,6 +11,7 @@ export interface UseScanReturn {
   progress: ScanProgress | null;
   isScanning: boolean;
   error: string | null;
+  method: "mft" | "walkdir" | null;
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -33,6 +34,7 @@ export function useScan(): UseScanReturn {
   const [progress, setProgress] = useState<ScanProgress | null>(null);
   const [isScanning, setIsScanning] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [method, setMethod] = useState<"mft" | "walkdir" | null>(null);
 
   // Flat accumulation buffer — never triggers renders.
   const nodeBuffer = useRef<Map<string, FileNode>>(new Map());
@@ -43,14 +45,17 @@ export function useScan(): UseScanReturn {
   // Cleanup handles for Tauri event listeners.
   const unlistenChunk = useRef<UnlistenFn | null>(null);
   const unlistenError = useRef<UnlistenFn | null>(null);
+  const unlistenStart = useRef<UnlistenFn | null>(null);
 
   // ── Internal helpers ────────────────────────────────────────────────────────
 
   const cleanupListeners = useCallback(() => {
     unlistenChunk.current?.();
     unlistenError.current?.();
+    unlistenStart.current?.();
     unlistenChunk.current = null;
     unlistenError.current = null;
+    unlistenStart.current = null;
   }, []);
 
   const flushTree = useCallback((finalProgress: ScanProgress | null) => {
@@ -150,6 +155,7 @@ export function useScan(): UseScanReturn {
       setProgress(null);
       setError(null);
       setIsScanning(true);
+      setMethod(null);
 
       // Subscribe before invoking to avoid missing early chunks.
       unlistenChunk.current = await listen<ScanChunk>("scan_chunk", (event) => {
@@ -180,6 +186,14 @@ export function useScan(): UseScanReturn {
         cleanupListeners();
       });
 
+      unlistenStart.current = await listen<{ method: "mft" | "walkdir" }>("scan_start", (event) => {
+        setMethod(event.payload.method);
+        // If this is a fallback restart, clear partial data
+        nodeBuffer.current.clear();
+        setTree(null);
+        setProgress(null);
+      });
+
       try {
         await invoke("scan_directory", { 
           path, 
@@ -208,5 +222,5 @@ export function useScan(): UseScanReturn {
     cleanupListeners();
   }, [cleanupListeners]);
 
-  return { startScan, cancelScan, tree, progress, isScanning, error };
+  return { startScan, cancelScan, tree, progress, isScanning, error, method };
 }
