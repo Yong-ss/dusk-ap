@@ -1,5 +1,4 @@
 use std::{
-    collections::{HashMap},
     io,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -320,8 +319,6 @@ impl Scanner for WindowsMftScanner {
         // ── Phase 5: Virtual Tree Stream (Folder-First) ───────────────
         let stream_start = Instant::now();
         let base_path = format!("{}:\\", drive_letter);
-        let mut path_cache: HashMap<u64, String> = HashMap::with_capacity(300000);
-        path_cache.insert(5, base_path.clone());
 
         let mut batch: Vec<FileNode> = Vec::with_capacity(BATCH_SIZE);
         let mut scanned_count = 0u64;
@@ -357,7 +354,6 @@ impl Scanner for WindowsMftScanner {
         while let Some(pid) = queue.pop() {
             if cancel.load(Ordering::Relaxed) { return Err(ScanError::Cancelled); }
             let children = &hierarchy[pid as usize];
-            let p_path = path_cache.get(&pid).cloned().unwrap_or(base_path.clone());
 
             for &cid in children {
                 if let Some(entry) = &raw_entries[cid as usize] {
@@ -367,8 +363,6 @@ impl Scanner for WindowsMftScanner {
                     }
 
                     if entry.kind == NodeKind::Dir {
-                        let full_path = format!("{}\\{}", p_path, entry.name);
-                        path_cache.insert(cid, full_path);
                         queue.push(cid);
                         
                         // We ONLY push folders to the frontend stream to eliminate the 2.2M JSON object bottleneck. 

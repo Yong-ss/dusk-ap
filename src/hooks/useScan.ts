@@ -46,7 +46,8 @@ export function useScan() {
               
               // Lazy Path Reconstruction (only if path is empty)
               if (!nodeInTree.path && parent.path) {
-                nodeInTree.path = `${parent.path}\\${nodeInTree.name}`;
+                const separator = parent.path.endsWith('\\') ? '' : '\\';
+                nodeInTree.path = `${parent.path}${separator}${nodeInTree.name}`;
               }
             }
           }
