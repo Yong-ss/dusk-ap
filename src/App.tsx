@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import { useScan } from './hooks/useScan';
 import TreemapCanvas from './components/TreemapCanvas';
@@ -16,8 +17,21 @@ const App: React.FC = () => {
   
   const [scanPath, setScanPath] = useState<string | null>(null);
   const [currentViewId, setCurrentViewId] = useState<string | null>(null);
+  const [folderFiles, setFolderFiles] = useState<FileNode[]>([]);
 
   const viewNode = currentViewId ? treeMap.get(currentViewId) : rootNode;
+
+  useEffect(() => {
+    if (!viewNode || isScanning) {
+      setFolderFiles([]);
+      return;
+    }
+    
+    // Instantly fetch files from the backend memory cache for the active folder
+    invoke<FileNode[]>('get_folder_files', { folderId: viewNode.id })
+      .then(files => setFolderFiles(files))
+      .catch(err => console.error('[App] Failed to fetch folder files:', err));
+  }, [viewNode, isScanning]);
 
   const handleScan = async () => {
     try {
@@ -38,17 +52,21 @@ const App: React.FC = () => {
   };
 
   const handleDirClick = (node: FileNode) => {
-    setCurrentViewId(node.path);
+    setCurrentViewId(node.id);
   };
 
   const handleGoUp = useCallback(() => {
-    if (!viewNode || viewNode.path === scanPath) return;
-    const parentPath = getParentPath(viewNode.path);
-    setCurrentViewId(parentPath);
-  }, [viewNode, scanPath]);
+    if (!viewNode || !viewNode.parentId) return;
+    setCurrentViewId(viewNode.parentId);
+  }, [viewNode]);
 
   const handleBreadcrumbClick = (path: string) => {
-    setCurrentViewId(path);
+    for (const node of treeMap.values()) {
+      if (node.path.toLowerCase() === path.toLowerCase()) {
+        setCurrentViewId(node.id);
+        break;
+      }
+    }
   };
 
   useEffect(() => {
@@ -130,9 +148,17 @@ const App: React.FC = () => {
           />
         )}
         
-        {/* Split View: Treemap takes primary focus, List secondary if needed, or just Treemap for now */}
-        <div className="flex-1 min-h-0 relative">
-          <TreemapCanvas viewRoot={viewNode || null} onNodeClick={handleDirClick} />
+        {/* Split View: Treemap takes primary focus, List secondary */}
+        <div className="flex-1 min-h-0 flex flex-row relative pb-16">
+          <div className="flex-1 min-w-0 relative">
+            <TreemapCanvas viewRoot={viewNode || null} onNodeClick={handleDirClick} />
+          </div>
+          {/* File List conditionally renders if not scanning and has root */}
+          {!isScanning && viewNode && (
+            <div className="w-1/3 min-w-[300px] max-w-[500px] h-full relative z-10 shrink-0 shadow-2xl">
+              <FileList files={folderFiles} parentSize={viewNode.size || 0} />
+            </div>
+          )}
         </div>
 
         {/* Improved Status Bar */}

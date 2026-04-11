@@ -14,6 +14,7 @@ export interface FileNode {
   id: string;
   name: string;
   path: string;
+  parentId?: string;
   /** Bytes. Directories hold the recursive total. */
   size: number;
   kind: "file" | "dir";

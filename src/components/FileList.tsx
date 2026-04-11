@@ -1,102 +1,93 @@
-import React, { useMemo } from 'react';
+import { useRef } from 'react';
+import { useVirtualizer } from '@tanstack/react-virtual';
 import { FileNode } from '../types';
-import { formatBytes, formatCount } from '../lib/format';
+import { formatBytes } from '../lib/format';
 
 interface FileListProps {
-  viewRoot: FileNode | null;
-  onDirClick: (node: FileNode) => void;
+  files: FileNode[];
+  parentSize: number; // To show relative progress bars
 }
 
-const FileList: React.FC<FileListProps> = ({ viewRoot, onDirClick }) => {
-  const nodes = viewRoot?.children || [];
+export default function FileList({ files, parentSize }: FileListProps) {
+  const parentRef = useRef<HTMLDivElement>(null);
 
-  const sortedNodes = useMemo(() => {
-    return [...nodes].sort((a, b) => {
-      // Directories first
-      if (a.kind !== b.kind) {
-        return a.kind === 'dir' ? -1 : 1;
-      }
-      // Then by size descending
-      return b.size - a.size;
-    });
-  }, [nodes]);
+  const virtualizer = useVirtualizer({
+    count: files.length,
+    getScrollElement: () => parentRef.current,
+    estimateSize: () => 36, // 36px row height
+    overscan: 10,
+  });
 
-  const visibleNodes = sortedNodes.slice(0, 200);
-  const totalCount = nodes.length;
+  if (files.length === 0) {
+    return (
+      <div className="flex-1 flex items-center justify-center text-gray-500 text-sm font-mono italic p-4">
+        No files in this directory.
+      </div>
+    );
+  }
 
   return (
-    <div className="flex-1 flex flex-col min-h-0 bg-gray-950 text-gray-300 select-none">
-      <div className="p-4 border-b border-gray-800 flex justify-between items-center bg-gray-900/50 backdrop-blur-sm">
-        <h2 className="text-sm font-medium flex items-center gap-2">
-          {viewRoot?.name || 'Scan Index'}
-          <span className="text-[10px] text-gray-600 bg-gray-950 px-1.5 py-0.5 rounded border border-gray-800 font-mono">
-            {formatCount(totalCount)} items
-          </span>
-        </h2>
-        {totalCount > 200 && (
-          <span className="text-[10px] text-gray-600 italic">Showing top 200 of {formatCount(totalCount)} results</span>
-        )}
+    <div className="flex flex-col h-full bg-gray-900/50 backdrop-blur-sm border-l border-gray-800">
+      {/* Table Header */}
+      <div className="flex items-center px-4 py-2 text-xs font-bold text-gray-400 uppercase tracking-widest border-b border-gray-800 shadow-md bg-gray-950/80 shrink-0">
+        <div className="flex-1 truncate">Name</div>
+        <div className="w-24 text-right shrink-0">Type</div>
+        <div className="w-32 text-right shrink-0">Size</div>
       </div>
-      
-      <div className="flex-1 overflow-y-auto font-mono text-xs custom-scrollbar">
-        <table className="w-full text-left border-collapse">
-          <thead className="sticky top-0 bg-gray-950 z-10 shadow-sm border-b border-gray-800">
-            <tr className="text-gray-500 uppercase tracking-wider text-[10px]">
-              <th className="px-4 py-2 font-normal">Name</th>
-              <th className="px-4 py-2 font-normal text-right w-32">Size</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-gray-900/50">
-            {visibleNodes.map((node) => (
-              <tr 
-                key={node.id} 
-                className="hover:bg-gray-900 transition-colors group cursor-pointer"
-                onClick={() => node.kind === 'dir' && onDirClick(node)}
+
+      {/* Virtualized Body */}
+      <div 
+        ref={parentRef} 
+        className="flex-1 overflow-auto custom-scrollbar relative"
+        style={{ contain: 'strict' }}
+      >
+        <div
+          style={{
+            height: `${virtualizer.getTotalSize()}px`,
+            width: '100%',
+            position: 'relative',
+          }}
+        >
+          {virtualizer.getVirtualItems().map((virtualRow) => {
+            const file = files[virtualRow.index];
+            const sizeRatio = parentSize > 0 ? (file.size / parentSize) * 100 : 0;
+            
+            // Extract extension safely
+            const extMatch = file.name.match(/\.([^.]+)$/);
+            const ext = extMatch ? extMatch[1].toUpperCase() : 'FILE';
+
+            return (
+              <div
+                key={virtualRow.key}
+                className="absolute top-0 left-0 w-full flex items-center px-4 text-xs hover:bg-gray-800/50 transition-colors border-b border-gray-800/30 group"
+                style={{
+                  height: `${virtualRow.size}px`,
+                  transform: `translateY(${virtualRow.start}px)`,
+                }}
               >
-                <td className="px-4 py-2 flex items-center gap-2 truncate">
-                  <span className="text-lg opacity-60 group-hover:opacity-100 transition-opacity">
-                    {node.kind === 'dir' ? '📁' : '📄'}
-                  </span>
-                  <span className="truncate max-w-[400px]" title={node.name}>
-                    {node.name.length > 40 ? node.name.slice(0, 40) + '...' : node.name}
-                  </span>
-                  {node.kind === 'dir' && node.children && (
-                     <span className="text-[9px] text-gray-600 font-bold group-hover:text-blue-500 transition-colors">
-                        ({node.children.length})
-                     </span>
-                  )}
-                </td>
-                <td className={`px-4 py-2 text-right whitespace-nowrap transition-colors font-bold ${node.kind === 'dir' ? 'text-blue-400 group-hover:text-blue-300' : 'text-emerald-400 group-hover:text-emerald-300'}`}>
-                  {formatBytes(node.size)}
-                  {node.extension && (
-                    <span className="ml-2 text-[9px] text-gray-700 uppercase">{node.extension.slice(1)}</span>
-                  )}
-                </td>
-              </tr>
-            ))}
-            {totalCount === 0 && !viewRoot && (
-              <tr>
-                <td colSpan={2} className="py-32 text-center text-gray-600">
-                  <div className="flex flex-col items-center gap-2">
-                    <span className="text-4xl opacity-20 animate-pulse">🛰️</span>
-                    <p className="text-lg font-medium opacity-50">Mapping Structures</p>
-                    <p className="text-sm opacity-40">Connecting parent-child hierarchies...</p>
+                {/* Size Visualizer Bar (Background) */}
+                <div 
+                  className="absolute left-0 bottom-0 top-0 bg-emerald-900/10 transition-all z-0"
+                  style={{ width: `${Math.min(100, Math.max(0, sizeRatio))}%` }}
+                />
+
+                <div className="flex-1 min-w-0 pr-4 relative z-10 flex items-center gap-2">
+                  <span className="text-gray-500 text-sm">📄</span>
+                  <div className="text-gray-200 truncate font-medium group-hover:text-emerald-400 transition-colors flex-1">
+                    {file.name}
                   </div>
-                </td>
-              </tr>
-            )}
-            {totalCount === 0 && viewRoot && (
-              <tr>
-                <td colSpan={2} className="py-24 text-center text-gray-600 font-mono italic opacity-50">
-                  Directory is empty
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
+                </div>
+                <div className="w-24 text-right shrink-0 text-gray-500 relative z-10 font-mono text-[10px]">
+                  {ext}
+                </div>
+                <div className="w-32 text-right shrink-0 text-emerald-400 font-mono font-bold tracking-tight relative z-10">
+                  {formatBytes(file.size)}
+                </div>
+              </div>
+            );
+          })}
+        </div>
       </div>
     </div>
   );
-};
-
-export default FileList;
+}

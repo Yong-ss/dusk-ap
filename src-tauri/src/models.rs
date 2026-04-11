@@ -18,6 +18,7 @@ pub struct DriveInfo {
 // ── File system node ────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct FileNode {
     /// Unique ID — SipHash of the absolute path (hex string)
     pub id: String,
@@ -44,6 +45,21 @@ pub enum NodeKind {
     Dir,
 }
 
+// ── Shared MFT Cache for On-Demand File Resolving ───────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct MftEntry {
+    pub name: String,
+    pub parent_id: u64,
+    pub size: u64,
+    pub kind: NodeKind,
+}
+
+pub struct MftCache {
+    pub raw_entries: Vec<Option<MftEntry>>,
+    pub hierarchy: Vec<Vec<u64>>,
+}
+
 // ── Scan progress ────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -62,7 +78,9 @@ pub struct ScanProgress {
 // ── Streaming chunk emitted as a Tauri event ─────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ScanChunk {
+    pub scan_id: String,
     pub nodes: Vec<FileNode>,
     pub progress: ScanProgress,
 }

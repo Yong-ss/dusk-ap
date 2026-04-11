@@ -24,6 +24,7 @@ use crate::{
 #[tauri::command]
 pub async fn scan_directory(
     path: String,
+    scan_id: String,
     options: ScanOptions,
     app: AppHandle,
     state: State<'_, ScanState>,
@@ -35,13 +36,14 @@ pub async fn scan_directory(
     // Reset cancel flag for the new scan.
     state.cancel.store(false, Ordering::Relaxed);
     let cancel = Arc::clone(&state.cancel);
+    let cache = Arc::clone(&state.cache);
 
     tokio::task::spawn_blocking(move || {
-        println!("[dusk/core] 🚀 Launching scanner thread...");
+        println!("[dusk/core] 🚀 Launching scanner thread... (ID: {})", scan_id);
         let (scanner, method) = create_scanner(&path, options.clone());
         println!("[dusk/core] 🛠 Scanner selected: {}", method);
 
-        let _ = app.emit("scan_start", json!({ "method": method }));
+        let _ = app.emit("scan_start", json!({ "method": method, "scanId": scan_id }));
 
         let (tx, rx) = mpsc::channel();
 
@@ -54,7 +56,7 @@ pub async fn scan_directory(
             }
         });
 
-        if let Err(e) = scanner.scan(&path, tx, cancel) {
+        if let Err(e) = scanner.scan(&path, scan_id, tx, cancel, cache) {
              eprintln!("[dusk/cmd] scan error: {e}");
              let _ = app.emit("scan_error", e.to_string());
         }
@@ -68,6 +70,48 @@ pub async fn scan_directory(
 pub async fn cancel_scan(state: State<'_, ScanState>) -> Result<(), String> {
     state.cancel.store(true, Ordering::Relaxed);
     Ok(())
+}
+
+/// Instantly fetch all files for a specific parsed folder using the in-memory cache.
+#[tauri::command]
+pub async fn get_folder_files(
+    folder_id: String,
+    state: State<'_, ScanState>
+) -> Result<Vec<crate::models::FileNode>, String> {
+    let id = folder_id.parse::<u64>().map_err(|e| e.to_string())?;
+    
+    let cache_lock = state.cache.read().await;
+    let cache = if let Some(c) = cache_lock.as_ref() { c } else { return Ok(vec![]); };
+
+    if id as usize >= cache.hierarchy.len() {
+        return Ok(vec![]);
+    }
+
+    let children = &cache.hierarchy[id as usize];
+    let mut files = Vec::new();
+
+    for &cid in children {
+        if let Some(entry) = &cache.raw_entries[cid as usize] {
+            if entry.kind == crate::models::NodeKind::File {
+                files.push(crate::models::FileNode {
+                    id: cid.to_string(),
+                    name: entry.name.clone(),
+                    path: String::new(), // Reconstructed natively on UI side if needed
+                    parent_id: Some(id.to_string()),
+                    size: entry.size,
+                    kind: crate::models::NodeKind::File,
+                    extension: None,
+                    children: None,
+                    modified: None,
+                });
+            }
+        }
+    }
+
+    // Sort by size descending
+    files.sort_by(|a, b| b.size.cmp(&a.size));
+
+    Ok(files)
 }
 
 /// Delete a file or directory recursively.

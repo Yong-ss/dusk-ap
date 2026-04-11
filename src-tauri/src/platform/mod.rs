@@ -13,8 +13,10 @@ pub trait Scanner: Send + Sync {
     fn scan(
         &self,
         path: &str,
+        scan_id: String,
         tx: Sender<ScanChunk>,
         cancel: Arc<AtomicBool>,
+        cache: Arc<tokio::sync::RwLock<Option<crate::models::MftCache>>>,
     ) -> Result<(), ScanError>;
 }
 

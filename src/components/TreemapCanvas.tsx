@@ -49,7 +49,7 @@ function computeLayout(
   rects: RectInfo[]
 ) {
   if (!node.children || node.children.length === 0 || depth >= maxDepth) {
-    if (w > 2 && h > 2) {
+    if (w >= 1 && h >= 1) {
       rects.push({ x, y, w, h, node, color: getColor(node.name, node.kind === 'file', node.extension) });
     }
     return;
@@ -62,7 +62,13 @@ function computeLayout(
   const contentW = Math.max(0, w - padding * 2);
   const contentH = Math.max(0, h - padding * 2);
 
-  if (contentW <= 0 || contentH <= 0) return;
+  // If the available space is too small to recurse with padding, render this directory as a solid block.
+  if (contentW <= 2 || contentH <= 2) {
+     if (w >= 1 && h >= 1) {
+         rects.push({ x, y, w, h, node, color: getColor(node.name, false, null) });
+     }
+     return;
+  }
 
   const totalSize = node.size || 1;
   
@@ -133,12 +139,20 @@ export default function TreemapCanvas({ viewRoot, onNodeClick }: TreemapCanvasPr
   }, []);
 
   useEffect(() => {
-    if (!viewRoot || !canvasRef.current || dimensions.width === 0 || dimensions.height === 0) return;
+    if (!canvasRef.current || dimensions.width === 0 || dimensions.height === 0) return;
 
     const canvas = canvasRef.current;
     const ctx = canvas.getContext('2d', { alpha: false });
     if (!ctx) return;
 
+    if (!viewRoot) {
+      // CLEAR the canvas if no root is present (e.g., between scans)
+      ctx.fillStyle = '#0f172a';
+      ctx.fillRect(0, 0, dimensions.width, dimensions.height);
+      setRects([]);
+      return;
+    }
+    
     const dpr = window.devicePixelRatio || 1;
     
     canvas.width = dimensions.width * dpr;

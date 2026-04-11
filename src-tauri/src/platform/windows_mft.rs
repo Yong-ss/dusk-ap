@@ -26,20 +26,12 @@ use windows::{
 use rayon::prelude::*;
 
 use crate::{
-    models::{FileNode, NodeKind, ScanChunk, ScanError, ScanProgress},
+    models::{FileNode, NodeKind, ScanChunk, ScanError, ScanProgress, MftEntry, MftCache},
     platform::Scanner,
 };
 
 const BATCH_SIZE: usize = 15000;
 const SECTOR_SIZE_ALIGN: u64 = 4096;
-
-#[derive(Debug, Clone)]
-struct MftEntry {
-    name: String,
-    parent_id: u64,
-    size: u64,
-    kind: NodeKind,
-}
 
 struct AlignedBuffer {
     ptr: *mut u8,
@@ -92,8 +84,10 @@ impl Scanner for WindowsMftScanner {
     fn scan(
         &self,
         path: &str,
+        scan_id: String,
         tx: Sender<ScanChunk>,
         cancel: Arc<AtomicBool>,
+        cache: Arc<tokio::sync::RwLock<Option<MftCache>>>,
     ) -> Result<(), ScanError> {
         let global_start = Instant::now();
         let drive_letter = path.chars().next().unwrap_or('C');
@@ -361,6 +355,7 @@ impl Scanner for WindowsMftScanner {
         
         // STAGE 1: Explicitly send root (Mask parent_id so Frontend anchors it as Tree Root)
         tx.send(ScanChunk {
+            scan_id: scan_id.clone(),
             nodes: vec![FileNode {
                 id: target_id.to_string(),
                 name: root_name,
@@ -413,6 +408,7 @@ impl Scanner for WindowsMftScanner {
 
                         if batch.len() >= BATCH_SIZE {
                             tx.send(ScanChunk {
+                                scan_id: scan_id.clone(),
                                 nodes: std::mem::take(&mut batch),
                                 progress: ScanProgress {
                                     scanned: scanned_count,
@@ -439,6 +435,7 @@ impl Scanner for WindowsMftScanner {
         eprintln!("- Objects:  {}\n", scanned_count);
 
         tx.send(ScanChunk {
+            scan_id: scan_id.clone(),
             nodes: batch,
             progress: ScanProgress {
                 scanned: scanned_count,
@@ -449,6 +446,15 @@ impl Scanner for WindowsMftScanner {
                 processed_records: Some(total_records),
               },
         }).ok();
+
+        // ── Phase 6: Global State Vault (Persistent O(1) Cache) ────────
+        // Safely park the raw_entries and hierarchy into the thread-safe global cache.
+        if let Ok(mut writer) = cache.try_write() {
+            *writer = Some(MftCache { raw_entries, hierarchy });
+        } else {
+            // Using blocking_write from tokio because we are inside spawn_blocking
+            *cache.blocking_write() = Some(MftCache { raw_entries, hierarchy });
+        }
 
         Ok(())
     }
