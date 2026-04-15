@@ -7,9 +7,11 @@ import ContextMenu, { ContextMenuState } from './ContextMenu';
 interface FileListProps {
   files: FileNode[];
   parentSize: number; // To show relative progress bars
+  fileCount: number;
+  dirCount: number;
 }
 
-export default function FileList({ files, parentSize }: FileListProps) {
+export default function FileList({ files, parentSize, fileCount, dirCount }: FileListProps) {
   const parentRef = useRef<HTMLDivElement>(null);
   const [ctxMenu, setCtxMenu] = useState<ContextMenuState | null>(null);
 
@@ -30,6 +32,23 @@ export default function FileList({ files, parentSize }: FileListProps) {
 
   return (
     <div className="flex flex-col h-full bg-gray-900/50 backdrop-blur-sm border-l border-gray-800">
+      {/* Folder Stats Bar */}
+      <div className="flex items-center justify-between px-4 py-3 bg-gray-950/40 border-b border-gray-800/50 shrink-0">
+        <div className="flex gap-4">
+          <div className="flex flex-col">
+            <span className="text-[9px] uppercase font-black text-gray-600 leading-none mb-1">Directories</span>
+            <span className="text-sm font-mono font-bold text-blue-400">{dirCount}</span>
+          </div>
+          <div className="flex flex-col">
+            <span className="text-[9px] uppercase font-black text-gray-600 leading-none mb-1">Files</span>
+            <span className="text-sm font-mono font-bold text-emerald-400">{fileCount}</span>
+          </div>
+        </div>
+        <div className="text-[10px] font-bold text-gray-700 uppercase tracking-tighter">
+          ACTIVE FOLDER
+        </div>
+      </div>
+
       {/* Table Header */}
       <div className="flex items-center px-4 py-2 text-xs font-bold text-gray-400 uppercase tracking-widest border-b border-gray-800 shadow-md bg-gray-950/80 shrink-0">
         <div className="flex-1 truncate">Name</div>

@@ -18,8 +18,33 @@ const App: React.FC = () => {
   const [scanPath, setScanPath] = useState<string | null>(null);
   const [currentViewId, setCurrentViewId] = useState<string | null>(null);
   const [folderFiles, setFolderFiles] = useState<FileNode[]>([]);
+  const [navigationHistory, setNavigationHistory] = useState<string[]>([]);
 
   const viewNode = currentViewId ? treeMap.get(currentViewId) : rootNode;
+
+  // Recursive stats calculator
+  const { fileCount, dirCount } = React.useMemo(() => {
+    if (!viewNode) return { fileCount: 0, dirCount: 0 };
+    
+    let fCount = 0;
+    let dCount = 0;
+
+    const traverse = (node: FileNode) => {
+      if (node.kind === 'file') {
+        fCount++;
+      } else {
+        dCount++;
+        node.children?.forEach(traverse);
+      }
+    };
+
+    // If we're looking at a folder that has children in memory (scanned)
+    // We treat the current viewNode as the root of this sub-calc
+    // Note: This only counts directories/files currently in the treeMap
+    viewNode.children?.forEach(traverse);
+    
+    return { fileCount: fCount, dirCount: dCount };
+  }, [viewNode]);
 
   useEffect(() => {
     if (!viewNode || isScanning) {
@@ -44,6 +69,7 @@ const App: React.FC = () => {
       if (selected && typeof selected === 'string') {
         setScanPath(selected);
         setCurrentViewId(null);
+        setNavigationHistory([]);
         await startScan(selected);
       }
     } catch (err) {
@@ -52,8 +78,22 @@ const App: React.FC = () => {
   };
 
   const handleDirClick = (node: FileNode) => {
+    if (currentViewId) {
+      setNavigationHistory(prev => [...prev, currentViewId]);
+    }
     setCurrentViewId(node.id);
   };
+
+  const handleGoBack = useCallback(() => {
+    if (navigationHistory.length === 0) {
+      if (currentViewId) setCurrentViewId(null);
+      return;
+    }
+    const newHistory = [...navigationHistory];
+    const prevId = newHistory.pop();
+    setNavigationHistory(newHistory);
+    setCurrentViewId(prevId || null);
+  }, [navigationHistory, currentViewId]);
 
   const handleGoUp = useCallback(() => {
     if (!viewNode || !viewNode.parentId) return;
@@ -63,7 +103,16 @@ const App: React.FC = () => {
   const handleBreadcrumbClick = (path: string) => {
     for (const node of treeMap.values()) {
       if (node.path.toLowerCase() === path.toLowerCase()) {
-        setCurrentViewId(node.id);
+        const targetId = node.id;
+        // Truncate history to the target node if it exists in history
+        const idx = navigationHistory.indexOf(targetId);
+        if (idx !== -1) {
+          setNavigationHistory(navigationHistory.slice(0, idx));
+        } else if (targetId === null || targetId === rootNode?.id) {
+          setNavigationHistory([]);
+        }
+        
+        setCurrentViewId(targetId);
         break;
       }
     }
@@ -143,12 +192,26 @@ const App: React.FC = () => {
 
       {/* Main Content Area */}
       <main className="flex-1 flex flex-col min-w-0 relative">
-        {viewNode && (
-          <Breadcrumb 
-            path={viewNode.path} 
-            onSegmentClick={handleBreadcrumbClick} 
-          />
-        )}
+        <div className="flex items-center">
+          {viewNode && (
+            <button
+              onClick={handleGoBack}
+              disabled={!currentViewId}
+              className="ml-4 px-2 py-1 text-gray-400 hover:text-white disabled:opacity-20 disabled:cursor-not-allowed transition-all text-xl"
+              title="Go Back"
+            >
+              ←
+            </button>
+          )}
+          {viewNode && (
+            <div className="flex-1 min-w-0">
+              <Breadcrumb 
+                path={viewNode.path} 
+                onSegmentClick={handleBreadcrumbClick} 
+              />
+            </div>
+          )}
+        </div>
         
         {/* Split View: Treemap takes primary focus, List secondary */}
         <div className="flex-1 min-h-0 flex flex-row relative pb-16">
@@ -158,7 +221,12 @@ const App: React.FC = () => {
           {/* File List conditionally renders if not scanning and has root */}
           {!isScanning && viewNode && (
             <div className="w-1/3 min-w-[300px] max-w-[500px] h-full relative z-10 shrink-0 shadow-2xl">
-              <FileList files={folderFiles} parentSize={viewNode.size || 0} />
+              <FileList 
+                files={folderFiles} 
+                parentSize={viewNode.size || 0} 
+                fileCount={fileCount}
+                dirCount={dirCount}
+              />
             </div>
           )}
         </div>
