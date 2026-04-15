@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import { useScan } from './hooks/useScan';
@@ -21,6 +21,46 @@ const App: React.FC = () => {
   const [navigationHistory, setNavigationHistory] = useState<string[]>([]);
 
   const viewNode = currentViewId ? treeMap.get(currentViewId) : rootNode;
+
+  // Helper to resolve full path on the fly
+  const resolveNodePath = useCallback((node: FileNode) => {
+    if (node.path && node.path.length > 0) return node.path;
+    
+    const parts = [node.name];
+    let curr = node;
+    while (curr.parentId) {
+      const parent = treeMap.get(curr.parentId);
+      if (!parent) break;
+      parts.unshift(parent.name);
+      curr = parent;
+      if (curr.path && curr.path.length > 0) {
+        // We hit a node with a pre-computed path (like the root)
+        const rootPath = curr.path.endsWith('\\') || curr.path.endsWith('/') 
+          ? curr.path 
+          : curr.path + '\\';
+        return rootPath + parts.slice(1).join('\\');
+      }
+    }
+    return parts.join('\\');
+  }, [treeMap]);
+
+  const viewNodePath = useMemo(() => {
+    if (!viewNode) return '';
+    return resolveNodePath(viewNode);
+  }, [viewNode, resolveNodePath]);
+
+  // AUTO-FOCUS: Land in the target folder as soon as it arrives
+  useEffect(() => {
+    if (!scanPath || currentViewId || !isScanning) return;
+    
+    // We search the treeMap for the requested folder
+    for (const node of treeMap.values()) {
+      if (node.kind === 'dir' && resolveNodePath(node).toLowerCase() === scanPath.toLowerCase()) {
+        setCurrentViewId(node.id);
+        break;
+      }
+    }
+  }, [treeMap, scanPath, currentViewId, isScanning, resolveNodePath]);
 
   // Recursive stats calculator
   const { fileCount, dirCount } = React.useMemo(() => {
@@ -102,7 +142,7 @@ const App: React.FC = () => {
 
   const handleBreadcrumbClick = (path: string) => {
     for (const node of treeMap.values()) {
-      if (node.path.toLowerCase() === path.toLowerCase()) {
+      if (resolveNodePath(node).toLowerCase() === path.toLowerCase()) {
         const targetId = node.id;
         // Truncate history to the target node if it exists in history
         const idx = navigationHistory.indexOf(targetId);
@@ -206,7 +246,7 @@ const App: React.FC = () => {
           {viewNode && (
             <div className="flex-1 min-w-0">
               <Breadcrumb 
-                path={viewNode.path} 
+                path={viewNodePath} 
                 onSegmentClick={handleBreadcrumbClick} 
               />
             </div>
@@ -216,7 +256,12 @@ const App: React.FC = () => {
         {/* Split View: Treemap takes primary focus, List secondary */}
         <div className="flex-1 min-h-0 flex flex-row relative pb-16">
           <div className="flex-1 min-w-0 relative">
-            <TreemapCanvas viewRoot={viewNode || null} onNodeClick={handleDirClick} viewFiles={folderFiles} />
+            <TreemapCanvas 
+              viewRoot={viewNode || null} 
+              onNodeClick={handleDirClick} 
+              viewFiles={folderFiles} 
+              viewPath={viewNodePath}
+            />
           </div>
           {/* File List conditionally renders if not scanning and has root */}
           {!isScanning && viewNode && (

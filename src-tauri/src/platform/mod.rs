@@ -24,7 +24,15 @@ pub trait Scanner: Send + Sync {
 pub fn create_scanner(path: &str, _options: ScanOptions) -> (Box<dyn Scanner>, &'static str) {
     #[cfg(windows)]
     {
-        // MFT for volume roots (requires admin), walkdir fallback for subdirectories
+        // MFT for volume roots OR subdirectories (if elevated)
+        // This allows scanning the whole disk but focusing on a subfolder.
+        if is_elevated() {
+            let drive_path = path.trim_start_matches("\\\\?\\");
+            if drive_path.len() >= 2 && drive_path.as_bytes()[1] == b':' {
+                return (Box::new(windows_mft::WindowsMftScanner::new()), "mft");
+            }
+        }
+
         if is_volume_root(path) {
             return (Box::new(windows_mft::WindowsMftScanner::new()), "mft");
         }

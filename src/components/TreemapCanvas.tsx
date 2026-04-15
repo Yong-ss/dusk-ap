@@ -9,6 +9,7 @@ interface TreemapCanvasProps {
   viewRoot: FileNode | null;
   onNodeClick: (node: FileNode) => void;
   viewFiles?: FileNode[];
+  viewPath?: string;
 }
 
 interface RectInfo {
@@ -441,7 +442,7 @@ function drawEmptyState(ctx: CanvasRenderingContext2D, w: number, h: number) {
 
 const MAX_DEPTH = 2; // viewRoot / children / grandchildren — no deeper
 
-export default function TreemapCanvas({ viewRoot, onNodeClick, viewFiles }: TreemapCanvasProps) {
+export default function TreemapCanvas({ viewRoot, onNodeClick, viewFiles, viewPath }: TreemapCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [rects, setRects] = useState<RectInfo[]>([]);

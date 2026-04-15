@@ -327,7 +327,8 @@ impl Scanner for WindowsMftScanner {
         // ── Phase 5: Virtual Tree Stream (Folder-First) ───────────────
         let stream_start = Instant::now();
         
-        // Resolve Target Record ID from Path
+        // Resolve Volume Root and Target Record ID from Path
+        let drive_root_path = format!("{}:\\", drive_letter);
         let path_parts: Vec<&str> = path.split(|c| c == '\\' || c == '/').filter(|s| !s.is_empty()).collect();
         let mut target_id = 5u64;
         
@@ -354,28 +355,23 @@ impl Scanner for WindowsMftScanner {
             }
         }
 
-        let root_name = if target_id == 5 {
-            format!("{}:\\", drive_letter)
-        } else {
-            raw_entries[target_id as usize].as_ref().unwrap().name.clone()
-        };
-
         let mut batch: Vec<FileNode> = Vec::with_capacity(BATCH_SIZE);
         let mut scanned_count = 0u64;
         let mut total_disk_size = 0u64;
 
-        // BFS traversal starts ONLY at the target folder
-        let mut queue = vec![target_id];
+        // BFS traversal starts at the VOLUME ROOT (ID 5)
+        // This ensures the entire disk hierarchy is available even if a subfolder was requested.
+        let mut queue = vec![5u64];
         
-        // STAGE 1: Explicitly send root (Mask parent_id so Frontend anchors it as Tree Root)
+        // STAGE 1: Explicitly send volume root as the anchor
         tx.send(ScanChunk {
             scan_id: scan_id.clone(),
             nodes: vec![FileNode {
-                id: target_id.to_string(),
-                name: root_name,
-                path: path.to_string(),
+                id: "5".to_string(),
+                name: drive_root_path.clone(),
+                path: drive_root_path.clone(), // Root still needs a path for bootstrapping
                 parent_id: None,
-                size: entry_sizes[target_id as usize],
+                size: entry_sizes[5],
                 kind: NodeKind::Dir,
                 extension: None,
                 children: None,
@@ -384,7 +380,7 @@ impl Scanner for WindowsMftScanner {
             progress: ScanProgress {
                 scanned: 1,
                 total_size: 0,
-                current_path: path.to_string(),
+                current_path: drive_root_path.clone(),
                 done: false,
                 total_records: Some(total_records),
                 processed_records: Some(total_records),
@@ -406,12 +402,10 @@ impl Scanner for WindowsMftScanner {
                     if entry.kind == NodeKind::Dir {
                         queue.push(cid);
                         
-                        // We ONLY push folders to the frontend stream to eliminate the 2.2M JSON object bottleneck. 
-                        // The sizes are already aggregated so the folders show the right size.
                         batch.push(FileNode {
                             id: cid.to_string(),
                             name: entry.name.clone(),
-                            path: String::new(), 
+                            path: String::new(), // Path will be computed by frontend on-demand to save CPU/Memory
                             parent_id: Some(pid.to_string()),
                             size: entry_sizes[cid as usize], 
                             kind: entry.kind.clone(),
