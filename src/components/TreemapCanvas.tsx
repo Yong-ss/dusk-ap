@@ -26,9 +26,6 @@ interface RectInfo {
 
 const PALETTE_HUES = [210, 150, 30, 340, 180, 60, 270, 120, 0, 240, 90, 310];
 
-const HEADER_H = [0, 22, 18]; // header height per depth (0=root, 1=child, 2=grandchild)
-const BORDER = 2;
-
 function hslToRgb(h: number, s: number, l: number): string {
   s /= 100; l /= 100;
   const k = (n: number) => (n + h / 30) % 12;
@@ -37,25 +34,49 @@ function hslToRgb(h: number, s: number, l: number): string {
   return `rgb(${Math.round(f(0) * 255)},${Math.round(f(8) * 255)},${Math.round(f(4) * 255)})`;
 }
 
-// Container header bar color
 function headerColor(hue: number, depth: number): string {
   const sat = Math.max(20, 45 - depth * 10);
   const light = Math.max(12, 22 - depth * 4);
   return hslToRgb(hue, sat, light);
 }
 
-// Container border color
 function borderColor(hue: number, depth: number): string {
   const sat = Math.max(15, 35 - depth * 8);
   const light = Math.max(18, 30 - depth * 5);
   return hslToRgb(hue, sat, light);
 }
 
-// Leaf fill color
 function leafColor(hue: number, depth: number, isFiles: boolean): string {
   const sat = Math.max(28, 50 - depth * 5);
   const light = isFiles ? 40 : 32;
   return hslToRgb(hue, sat, Math.max(14, light - depth * 3));
+}
+
+const HEADER_H = [0, 24, 20];
+const BORDER = 3;
+const RADIUS = 6;
+
+// Helper for glass rim light
+function drawGlassRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, color: string, isHovered: boolean) {
+  ctx.beginPath();
+  // @ts-ignore
+  if (ctx.roundRect) ctx.roundRect(x, y, w, h, RADIUS);
+  else ctx.rect(x, y, w, h);
+  
+  ctx.fillStyle = color;
+  ctx.fill();
+
+  ctx.lineWidth = 1;
+  ctx.strokeStyle = isHovered ? 'rgba(255,255,255,0.4)' : 'rgba(255,255,255,0.12)';
+  ctx.stroke();
+
+  if (w > 10 && h > 10) {
+    const grad = ctx.createLinearGradient(x, y, x, y + h);
+    grad.addColorStop(0, 'rgba(255,255,255,0.06)');
+    grad.addColorStop(1, 'rgba(0,0,0,0.1)');
+    ctx.fillStyle = grad;
+    ctx.fill();
+  }
 }
 
 // ── Squarified Layout ────────────────────────────────────────────────────────
@@ -145,9 +166,9 @@ function layoutNode(
 ) {
   const hasChildren = node.children && node.children.length > 0;
 
-  // Leaf: no children OR at max depth — solid block
+  // Leaf: no children OR at max depth
   if (!hasChildren || depth >= maxDepth) {
-    if (w >= 1 && h >= 1) {
+    if (w >= 0.5 && h >= 0.5) {
       rects.push({ x, y, w, h, node, depth, hue, container: false });
     }
     return;
@@ -162,9 +183,9 @@ function layoutNode(
   const innerH = h - hdr - BORDER;
 
   // Too small to show children — render as leaf instead
-  if (innerW < 10 || innerH < 10) {
-    if (w >= 1 && h >= 1) {
-      rects.push({ x, y, w, h, node, depth, hue, container: false });
+  if (innerW < 8 || innerH < 8) {
+    if (w >= 0.5 && h >= 0.5) {
+      rects.push({ x, y, w, h, node, depth, hue: 0, container: false });
     }
     return;
   }
@@ -211,8 +232,8 @@ function drawAll(
   hovId: string | null,
   canvasW: number, canvasH: number
 ) {
-  // Background
-  ctx.fillStyle = '#0a0e1a';
+  // Deep Background
+  ctx.fillStyle = '#030712'; // Neutral midnight
   ctx.fillRect(0, 0, canvasW, canvasH);
 
   for (const r of rects) {
@@ -225,34 +246,35 @@ function drawAll(
     const isHov = r.node.id === hovId;
 
     if (r.container) {
-      // ── Container: border + header bar + background ──
       const hdr = HEADER_H[Math.min(r.depth, HEADER_H.length - 1)] || 18;
+      
+      // Draw Container with Rounded Corners & HSL Style
+      drawGlassRect(ctx, x, y, w, h, borderColor(r.hue, r.depth), isHov);
 
-      // Border/background
-      ctx.fillStyle = borderColor(r.hue, r.depth);
-      ctx.fillRect(x, y, w, h);
-
-      // Header bar
+      // Header highlight/bar
       ctx.fillStyle = headerColor(r.hue, r.depth);
-      ctx.fillRect(x, y, w, hdr);
+      if (ctx.roundRect) {
+        ctx.beginPath();
+        // @ts-ignore
+        ctx.roundRect(x, y, w, hdr, [RADIUS, RADIUS, 0, 0]);
+        ctx.fill();
+      }
 
-      // Hover: lighten header
+      // Hover selection ring
       if (isHov) {
-        ctx.fillStyle = 'rgba(255,255,255,0.12)';
-        ctx.fillRect(x, y, w, hdr);
-        ctx.strokeStyle = 'rgba(255,255,255,0.5)';
-        ctx.lineWidth = 2;
-        ctx.strokeRect(x + 1, y + 1, w - 2, h - 2);
+        ctx.strokeStyle = 'rgba(255,255,255,0.3)';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
       }
 
       // Header text
       if (w > 40) {
-        const fontSize = hdr >= 20 ? 12 : 10;
-        ctx.font = `bold ${fontSize}px "Trebuchet MS","Segoe UI",sans-serif`;
+        const fontSize = hdr >= 22 ? 11 : 9;
+        ctx.font = `600 ${fontSize}px Inter, "Segoe UI", sans-serif`;
         ctx.textBaseline = 'middle';
         ctx.textAlign = 'left';
 
-        const maxTW = w - 8;
+        const maxTW = w - 10;
         let label = r.node.name;
         if (ctx.measureText(label).width > maxTW) {
           while (label.length > 1 && ctx.measureText(label + '\u2026').width > maxTW) {
@@ -263,58 +285,34 @@ function drawAll(
 
         // Size suffix for large enough headers
         let sizeStr = '';
-        if (w > 120 && r.node.size) {
+        if (w > 130 && r.node.size) {
           sizeStr = '  ' + formatBytes(r.node.size);
         }
 
-        const tx = x + 5;
+        const tx = x + 7;
         const ty = y + hdr / 2;
 
-        ctx.fillStyle = 'rgba(255,255,255,0.9)';
+        ctx.fillStyle = 'rgba(255,255,255,0.85)';
         ctx.fillText(label, tx, ty, maxTW);
 
         if (sizeStr && ctx.measureText(label).width + ctx.measureText(sizeStr).width < maxTW) {
-          ctx.fillStyle = 'rgba(255,255,255,0.4)';
+          ctx.fillStyle = 'rgba(255,255,255,0.35)';
           ctx.fillText(sizeStr, tx + ctx.measureText(label).width, ty);
         }
       }
 
     } else {
-      // ── Leaf block: solid color fill ──
-      const isFiles = r.node.name === '<Files>';
-      ctx.fillStyle = leafColor(r.hue, r.depth, isFiles);
-      ctx.fillRect(x, y, w, h);
+      // ── Leaf block: Rounded Glass Fill (Restored HSL) ──
+      const color = leafColor(r.hue, r.depth, r.node.name === '<Files>');
+      drawGlassRect(ctx, x, y, w, h, color, isHov);
 
-      // Subtle gradient
-      if (w > 8 && h > 8) {
-        const grad = ctx.createLinearGradient(x, y, x + w, y + h);
-        grad.addColorStop(0, 'rgba(255,255,255,0.05)');
-        grad.addColorStop(1, 'rgba(0,0,0,0.08)');
-        ctx.fillStyle = grad;
-        ctx.fillRect(x, y, w, h);
-      }
-
-      // 1px gap between siblings
-      ctx.fillStyle = 'rgba(0,0,0,0.4)';
-      ctx.fillRect(x + w - 1, y, 1, h);
-      ctx.fillRect(x, y + h - 1, w, 1);
-
-      // Hover
-      if (isHov) {
-        ctx.fillStyle = 'rgba(255,255,255,0.18)';
-        ctx.fillRect(x, y, w, h);
-        ctx.strokeStyle = 'rgba(255,255,255,0.7)';
-        ctx.lineWidth = 2;
-        ctx.strokeRect(x + 1, y + 1, w - 2, h - 2);
-      }
-
-      // Leaf label (name + size) for large enough blocks
-      if (w > 60 && h > 20) {
-        const fontSize = (w > 140 && h > 30) ? 11 : 9;
-        ctx.font = `bold ${fontSize}px "Trebuchet MS","Segoe UI",sans-serif`;
+      // Leaf label (name + size)
+      if (w > 50 && h > 18) {
+        const fontSize = (w > 120 && h > 28) ? 10 : 8;
+        ctx.font = `600 ${fontSize}px Inter, "Segoe UI", sans-serif`;
         ctx.textBaseline = 'top';
         ctx.textAlign = 'left';
-        const maxTW = w - 6;
+        const maxTW = w - 8;
 
         let label = r.node.name;
         if (ctx.measureText(label).width > maxTW) {
@@ -324,18 +322,18 @@ function drawAll(
           label += '\u2026';
         }
 
-        const tx = x + 3;
-        const ty = y + 3;
-        ctx.fillStyle = 'rgba(0,0,0,0.6)';
-        ctx.fillText(label, tx + 1, ty + 1, maxTW);
-        ctx.fillStyle = 'rgba(255,255,255,0.8)';
+        const tx = x + 5;
+        const ty = y + 5;
+        ctx.fillStyle = 'rgba(0,0,0,0.5)';
+        ctx.fillText(label, tx + 0.5, ty + 0.5, maxTW);
+        ctx.fillStyle = 'rgba(255,255,255,0.9)';
         ctx.fillText(label, tx, ty, maxTW);
 
-        // Size on second line if tall enough
-        if (h > 34 && r.node.size) {
-          ctx.font = `${Math.max(8, fontSize - 1)}px "Trebuchet MS","Segoe UI",sans-serif`;
-          ctx.fillStyle = 'rgba(255,255,255,0.45)';
-          ctx.fillText(formatBytes(r.node.size), tx, ty + fontSize + 2, maxTW);
+        // Size on second line
+        if (h > 30 && r.node.size) {
+          ctx.font = `500 ${Math.max(8, fontSize - 1)}px Inter, "Segoe UI", sans-serif`;
+          ctx.fillStyle = 'rgba(255,255,255,0.4)';
+          ctx.fillText(formatBytes(r.node.size), tx, ty + fontSize + 3, maxTW);
         }
       }
     }
@@ -343,25 +341,34 @@ function drawAll(
 }
 
 function drawEmptyState(ctx: CanvasRenderingContext2D, w: number, h: number) {
-  ctx.fillStyle = '#0a0e1a';
+  ctx.fillStyle = '#030712';
   ctx.fillRect(0, 0, w, h);
   const cx = w / 2, cy = h / 2;
-  const s = 48, ix = cx - s / 2, iy = cy - 50;
-  ctx.fillStyle = 'rgba(107,114,128,0.25)';
+  const s = 54, ix = cx - s / 2, iy = cy - 60;
+  
+  // Custom Folder Icon
+  ctx.fillStyle = 'rgba(107,114,128,0.15)';
   ctx.beginPath();
-  ctx.roundRect(ix, iy + 12, s, s - 12, 4);
-  ctx.fill();
-  ctx.beginPath();
-  ctx.roundRect(ix, iy + 2, s * 0.4, 14, [4, 4, 0, 0]);
-  ctx.fill();
+  if (ctx.roundRect) {
+    // @ts-ignore
+    ctx.roundRect(ix, iy + 14, s, s - 14, 6);
+    ctx.fill();
+    ctx.beginPath();
+    // @ts-ignore
+    ctx.roundRect(ix, iy + 4, s * 0.45, 12, [6, 6, 0, 0]);
+    ctx.fill();
+  } else {
+    ctx.fillRect(ix, iy + 14, s, s - 14);
+  }
+
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.font = 'bold 14px "Trebuchet MS","Segoe UI",sans-serif';
-  ctx.fillStyle = 'rgba(148,163,184,0.55)';
-  ctx.fillText('Select a folder to begin', cx, cy + 30);
-  ctx.font = '11px "Trebuchet MS","Segoe UI",sans-serif';
-  ctx.fillStyle = 'rgba(148,163,184,0.3)';
-  ctx.fillText('Click "Scan Folder" in the sidebar', cx, cy + 52);
+  ctx.font = '600 15px Inter, "Segoe UI", sans-serif';
+  ctx.fillStyle = 'rgba(148,163,184,0.6)';
+  ctx.fillText('Select a folder to begin', cx, cy + 35);
+  ctx.font = '500 12px Inter, "Segoe UI", sans-serif';
+  ctx.fillStyle = 'rgba(148,163,184,0.35)';
+  ctx.fillText('Click "Scan Folder" in the sidebar', cx, cy + 58);
 }
 
 // ── Component ────────────────────────────────────────────────────────────────
@@ -514,7 +521,7 @@ export default function TreemapCanvas({ viewRoot, onNodeClick, viewFiles }: Tree
           <div className="flex items-center gap-2 mb-1.5">
             <span
               className="w-2.5 h-2.5 rounded-full shrink-0"
-              style={{ backgroundColor: hslToRgb(hoveredTooltip.hue, 55, 50) }}
+              style={{ backgroundColor: leafColor(hoveredTooltip.hue, hoveredTooltip.depth, hoveredTooltip.node.name === '<Files>') }}
             />
             <span className="text-gray-400 font-semibold uppercase tracking-wider text-[10px]">
               {hoveredTooltip.node.kind === 'dir' ? 'Folder' : 'Files'}
