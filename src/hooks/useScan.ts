@@ -106,8 +106,6 @@ export function useScan() {
       }
     }
 
-    scanPathRef.current = path;
-
     tickerRef.current = setInterval(() => {
       setElapsedTime(Date.now() - (startTimeRef.current || Date.now()));
     }, 100);

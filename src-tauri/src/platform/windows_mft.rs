@@ -10,18 +10,31 @@ use std::{
 
 use windows::{
     core::HSTRING,
-    Win32::Foundation::{INVALID_HANDLE_VALUE, HANDLE},
+    Win32::Foundation::{INVALID_HANDLE_VALUE, HANDLE, CloseHandle},
     Win32::Storage::FileSystem::{
         CreateFileW, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
         FILE_FLAG_BACKUP_SEMANTICS, ReadFile,
         FILE_FLAG_NO_BUFFERING, FILE_FLAG_SEQUENTIAL_SCAN,
     },
     Win32::System::Memory::{
-        VirtualAlloc, VirtualFree, 
-        MEM_COMMIT, MEM_RESERVE, MEM_RELEASE, 
+        VirtualAlloc, VirtualFree,
+        MEM_COMMIT, MEM_RESERVE, MEM_RELEASE,
         PAGE_READWRITE,
     },
 };
+
+/// RAII wrapper to ensure volume handles are always closed.
+struct OwnedHandle(HANDLE);
+
+impl Drop for OwnedHandle {
+    fn drop(&mut self) {
+        unsafe { let _ = CloseHandle(self.0); }
+    }
+}
+
+impl OwnedHandle {
+    fn raw(&self) -> HANDLE { self.0 }
+}
 
 use rayon::prelude::*;
 
@@ -108,10 +121,11 @@ impl Scanner for WindowsMftScanner {
         if handle.is_invalid() || handle.0 == INVALID_HANDLE_VALUE.0 {
             return Err(ScanError::Permission(format!("Failed to open volume {} with Direct I/O. Run as administrator.", vol_path)));
         }
+        let handle = OwnedHandle(handle);
 
         // ── Phase 0: Boot Sector ──────────────────────────────────────
         let mut boot_buffer = AlignedBuffer::new(4096)?;
-        read_at(handle, 0, boot_buffer.as_mut_slice())?;
+        read_at(handle.raw(), 0, boot_buffer.as_mut_slice())?;
         
         let boot_sector = boot_buffer.as_slice();
         let bytes_per_sector = u16::from_le_bytes([boot_sector[0x0B], boot_sector[0x0C]]) as u64;
@@ -129,7 +143,7 @@ impl Scanner for WindowsMftScanner {
         // ── Phase 1: Read MFT Bounds ──────────────────────────────────
         let mft_start_offset = mft_lcn * bytes_per_cluster;
         let mut mft0_buffer = AlignedBuffer::new(4096)?;
-        read_at(handle, mft_start_offset, mft0_buffer.as_mut_slice())?;
+        read_at(handle.raw(), mft_start_offset, mft0_buffer.as_mut_slice())?;
 
         let mft_record0 = &mut mft0_buffer.as_mut_slice()[0..mft_record_size as usize];
         apply_fixups(mft_record0, bytes_per_sector as usize);
@@ -150,7 +164,7 @@ impl Scanner for WindowsMftScanner {
             current_lcn += lcn_delta;
             let run_offset = current_lcn as u64 * bytes_per_cluster;
             let run_size = count * bytes_per_cluster;
-            read_at(handle, run_offset, &mut mft_buffer.as_mut_slice()[buffer_offset..buffer_offset + run_size as usize])?;
+            read_at(handle.raw(), run_offset, &mut mft_buffer.as_mut_slice()[buffer_offset..buffer_offset + run_size as usize])?;
             buffer_offset += run_size as usize;
         }
         let read_elapsed = read_start.elapsed();

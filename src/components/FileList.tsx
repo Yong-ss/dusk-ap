@@ -1,7 +1,8 @@
-import { useRef } from 'react';
+import { useRef, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { FileNode } from '../types';
 import { formatBytes } from '../lib/format';
+import ContextMenu, { ContextMenuState } from './ContextMenu';
 
 interface FileListProps {
   files: FileNode[];
@@ -10,6 +11,7 @@ interface FileListProps {
 
 export default function FileList({ files, parentSize }: FileListProps) {
   const parentRef = useRef<HTMLDivElement>(null);
+  const [ctxMenu, setCtxMenu] = useState<ContextMenuState | null>(null);
 
   const virtualizer = useVirtualizer({
     count: files.length,
@@ -64,6 +66,10 @@ export default function FileList({ files, parentSize }: FileListProps) {
                   height: `${virtualRow.size}px`,
                   transform: `translateY(${virtualRow.start}px)`,
                 }}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  if (file.path) setCtxMenu({ x: e.clientX, y: e.clientY, path: file.path, name: file.name, size: file.size });
+                }}
               >
                 {/* Size Visualizer Bar (Background) */}
                 <div 
@@ -88,6 +94,10 @@ export default function FileList({ files, parentSize }: FileListProps) {
           })}
         </div>
       </div>
+
+      {ctxMenu && (
+        <ContextMenu menu={ctxMenu} onClose={() => setCtxMenu(null)} />
+      )}
     </div>
   );
 }

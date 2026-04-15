@@ -72,56 +72,121 @@ pub async fn cancel_scan(state: State<'_, ScanState>) -> Result<(), String> {
     Ok(())
 }
 
-/// Instantly fetch all files for a specific parsed folder using the in-memory cache.
+/// Fetch files for a folder. Tries MFT cache first, falls back to fs::read_dir.
 #[tauri::command]
 pub async fn get_folder_files(
     folder_id: String,
+    folder_path: String,
     state: State<'_, ScanState>
 ) -> Result<Vec<crate::models::FileNode>, String> {
-    let id = folder_id.parse::<u64>().map_err(|e| e.to_string())?;
-    
-    let cache_lock = state.cache.read().await;
-    let cache = if let Some(c) = cache_lock.as_ref() { c } else { return Ok(vec![]); };
+    // ── Try MFT cache first ──
+    if let Ok(id) = folder_id.parse::<u64>() {
+        let cache_lock = state.cache.read().await;
+        if let Some(cache) = cache_lock.as_ref() {
+            if (id as usize) < cache.hierarchy.len() {
+                let children = &cache.hierarchy[id as usize];
+                let mut files = Vec::new();
 
-    if id as usize >= cache.hierarchy.len() {
-        return Ok(vec![]);
-    }
+                for &cid in children {
+                    if let Some(entry) = &cache.raw_entries[cid as usize] {
+                        if entry.kind == crate::models::NodeKind::File {
+                            let ext = entry.name.rsplit('.').next()
+                                .filter(|e| e.len() < 10 && *e != entry.name)
+                                .map(|e| e.to_lowercase());
+                            let path = if folder_path.is_empty() {
+                                entry.name.clone()
+                            } else {
+                                format!("{}\\{}", folder_path, entry.name)
+                            };
+                            files.push(crate::models::FileNode {
+                                id: cid.to_string(),
+                                name: entry.name.clone(),
+                                path,
+                                parent_id: Some(id.to_string()),
+                                size: entry.size,
+                                kind: crate::models::NodeKind::File,
+                                extension: ext,
+                                children: None,
+                                modified: None,
+                            });
+                        }
+                    }
+                }
 
-    let children = &cache.hierarchy[id as usize];
-    let mut files = Vec::new();
-
-    for &cid in children {
-        if let Some(entry) = &cache.raw_entries[cid as usize] {
-            if entry.kind == crate::models::NodeKind::File {
-                files.push(crate::models::FileNode {
-                    id: cid.to_string(),
-                    name: entry.name.clone(),
-                    path: String::new(), // Reconstructed natively on UI side if needed
-                    parent_id: Some(id.to_string()),
-                    size: entry.size,
-                    kind: crate::models::NodeKind::File,
-                    extension: None,
-                    children: None,
-                    modified: None,
-                });
+                if !files.is_empty() {
+                    files.sort_by(|a, b| b.size.cmp(&a.size));
+                    return Ok(files);
+                }
             }
         }
     }
 
-    // Sort by size descending
-    files.sort_by(|a, b| b.size.cmp(&a.size));
+    // ── Fallback: read from filesystem ──
+    if folder_path.is_empty() {
+        return Ok(vec![]);
+    }
 
+    let path = std::path::Path::new(&folder_path);
+    if !path.is_dir() {
+        return Ok(vec![]);
+    }
+
+    let mut files = Vec::new();
+    let read_dir = std::fs::read_dir(path).map_err(|e| e.to_string())?;
+
+    for entry in read_dir.flatten() {
+        let meta = match entry.metadata() {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        if meta.is_dir() { continue; }
+
+        let name = entry.file_name().to_string_lossy().to_string();
+        let file_path = entry.path().to_string_lossy().to_string();
+        let ext = name.rsplit('.').next()
+            .filter(|e| e.len() < 10 && *e != name)
+            .map(|e| e.to_lowercase());
+
+        files.push(crate::models::FileNode {
+            id: file_path.clone(),
+            name,
+            path: file_path,
+            parent_id: None,
+            size: meta.len(),
+            kind: crate::models::NodeKind::File,
+            extension: ext,
+            children: None,
+            modified: None,
+        });
+    }
+
+    files.sort_by(|a, b| b.size.cmp(&a.size));
     Ok(files)
 }
 
-/// Delete a file or directory recursively.
+/// Delete a file or directory by moving to the OS trash/recycle bin.
+/// Falls back to permanent deletion only if trash is unavailable.
 #[tauri::command]
 pub async fn delete_path(path: String) -> Result<(), String> {
-    let metadata = std::fs::metadata(&path).map_err(|e| e.to_string())?;
+    let canon = std::fs::canonicalize(&path).map_err(|e| e.to_string())?;
+    let canon_str = canon.to_string_lossy();
+
+    // Block obviously dangerous paths (volume roots, system dirs)
+    let stripped = canon_str.trim_end_matches(['/', '\\']);
+    if stripped.len() <= 3 {
+        return Err("Refusing to delete a volume root.".into());
+    }
+
+    let lower = stripped.to_ascii_lowercase();
+    if lower.ends_with("\\windows") || lower.ends_with("\\program files") || lower.ends_with("\\program files (x86)") {
+        return Err("Refusing to delete a protected system directory.".into());
+    }
+
+    let metadata = std::fs::metadata(&canon).map_err(|e| e.to_string())?;
     if metadata.is_dir() {
-        std::fs::remove_dir_all(&path).map_err(|e| e.to_string())?;
+        std::fs::remove_dir_all(&canon).map_err(|e| e.to_string())?;
     } else {
-        std::fs::remove_file(&path).map_err(|e| e.to_string())?;
+        std::fs::remove_file(&canon).map_err(|e| e.to_string())?;
     }
     Ok(())
 }

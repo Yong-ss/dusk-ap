@@ -5,7 +5,7 @@ import { useScan } from './hooks/useScan';
 import TreemapCanvas from './components/TreemapCanvas';
 import FileList from './components/FileList';
 import Breadcrumb from './components/Breadcrumb';
-import { formatCount, getParentPath, formatBytes } from './lib/format';
+import { formatCount, formatBytes } from './lib/format';
 import { FileNode } from './types';
 
 const App: React.FC = () => {
@@ -28,7 +28,7 @@ const App: React.FC = () => {
     }
     
     // Instantly fetch files from the backend memory cache for the active folder
-    invoke<FileNode[]>('get_folder_files', { folderId: viewNode.id })
+    invoke<FileNode[]>('get_folder_files', { folderId: viewNode.id, folderPath: viewNode.path || '' })
       .then(files => setFolderFiles(files))
       .catch(err => console.error('[App] Failed to fetch folder files:', err));
   }, [viewNode, isScanning]);
@@ -71,6 +71,8 @@ const App: React.FC = () => {
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || (e.target as HTMLElement)?.isContentEditable) return;
       if (e.key === 'Backspace') handleGoUp();
     };
     window.addEventListener('keydown', handleKeyDown);
@@ -133,7 +135,7 @@ const App: React.FC = () => {
 
         {scanPath && (
           <div className="p-4 border-t border-gray-800 bg-gray-950/30">
-            <p className="text-[9px] text-gray-500 uppercase font-bold mb-1 tracking-wider">Target Target</p>
+            <p className="text-[9px] text-gray-500 uppercase font-bold mb-1 tracking-wider">Scan Target</p>
             <p className="text-[11px] truncate text-gray-400 font-mono leading-tight" title={scanPath}>{scanPath}</p>
           </div>
         )}
@@ -151,7 +153,7 @@ const App: React.FC = () => {
         {/* Split View: Treemap takes primary focus, List secondary */}
         <div className="flex-1 min-h-0 flex flex-row relative pb-16">
           <div className="flex-1 min-w-0 relative">
-            <TreemapCanvas viewRoot={viewNode || null} onNodeClick={handleDirClick} />
+            <TreemapCanvas viewRoot={viewNode || null} onNodeClick={handleDirClick} viewFiles={folderFiles} />
           </div>
           {/* File List conditionally renders if not scanning and has root */}
           {!isScanning && viewNode && (
@@ -208,16 +210,6 @@ const App: React.FC = () => {
         )}
       </main>
 
-      <style dangerouslySetInnerHTML={{ __html: `
-        @keyframes progress-indeterminate {
-          0% { left: -40%; width: 40%; }
-          50% { width: 60%; }
-          100% { left: 100%; width: 40%; }
-        }
-        .animate-progress-indeterminate {
-          animation: progress-indeterminate 1.8s infinite ease-in-out;
-        }
-      `}} />
     </div>
   );
 };

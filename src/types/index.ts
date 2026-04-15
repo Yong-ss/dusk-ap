@@ -38,6 +38,7 @@ export interface ScanProgress {
 // ── Streaming chunk received from Tauri event ─────────────────────────────────
 
 export interface ScanChunk {
+  scanId: string;
   nodes: FileNode[];
   progress: ScanProgress;
 }

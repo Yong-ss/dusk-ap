@@ -1,5 +1,6 @@
 #[cfg(windows)]
 pub mod windows_mft;
+pub mod walkdir_scanner;
 
 use std::sync::{
     atomic::AtomicBool,
@@ -23,13 +24,17 @@ pub trait Scanner: Send + Sync {
 pub fn create_scanner(path: &str, _options: ScanOptions) -> (Box<dyn Scanner>, &'static str) {
     #[cfg(windows)]
     {
-        if is_volume_root(path) && is_elevated() {
+        // MFT for volume roots (requires admin), walkdir fallback for subdirectories
+        if is_volume_root(path) {
             return (Box::new(windows_mft::WindowsMftScanner::new()), "mft");
         }
+        return (Box::new(walkdir_scanner::WalkdirScanner::new()), "walkdir");
     }
 
-    // Default or Error for non-NTFS/non-Windows
-    (Box::new(windows_mft::WindowsMftScanner::new()), "mft")
+    #[cfg(not(windows))]
+    {
+        (Box::new(walkdir_scanner::WalkdirScanner::new()), "walkdir")
+    }
 }
 
 #[cfg(windows)]

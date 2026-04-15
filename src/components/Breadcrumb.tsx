@@ -16,7 +16,7 @@ const Breadcrumb: React.FC<BreadcrumbProps> = ({ path, onSegmentClick }) => {
   return (
     <div className="flex items-center gap-1 px-4 py-1.5 text-[10px] font-mono text-gray-500 bg-gray-950/50 border-b border-gray-800/50 overflow-x-auto whitespace-nowrap no-scrollbar select-none">
       <button 
-        onClick={() => onSegmentClick(isWindows ? segments[0] + '\\' : '/')}
+        onClick={() => onSegmentClick(isWindows ? (segments[0] ?? '') + '\\' : '/')}
         className="hover:text-emerald-400 transition-colors uppercase font-bold tracking-tighter"
       >
         ROOT
