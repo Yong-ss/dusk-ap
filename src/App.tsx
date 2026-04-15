@@ -9,12 +9,12 @@ import { formatCount, formatBytes } from './lib/format';
 import { FileNode } from './types';
 
 const App: React.FC = () => {
-  const { 
-    isScanning, progress, rootNode, treeMap, 
-    startScan, cancelScan, 
-    elapsedTime, duration, estimatedTotalSize 
+  const {
+    isScanning, progress, rootNode, treeMap,
+    startScan, cancelScan,
+    elapsedTime, duration, estimatedTotalSize
   } = useScan();
-  
+
   const [scanPath, setScanPath] = useState<string | null>(null);
   const [currentViewId, setCurrentViewId] = useState<string | null>(null);
   const [folderFiles, setFolderFiles] = useState<FileNode[]>([]);
@@ -25,7 +25,7 @@ const App: React.FC = () => {
   // Helper to resolve full path on the fly
   const resolveNodePath = useCallback((node: FileNode) => {
     if (node.path && node.path.length > 0) return node.path;
-    
+
     const parts = [node.name];
     let curr = node;
     while (curr.parentId) {
@@ -35,8 +35,8 @@ const App: React.FC = () => {
       curr = parent;
       if (curr.path && curr.path.length > 0) {
         // We hit a node with a pre-computed path (like the root)
-        const rootPath = curr.path.endsWith('\\') || curr.path.endsWith('/') 
-          ? curr.path 
+        const rootPath = curr.path.endsWith('\\') || curr.path.endsWith('/')
+          ? curr.path
           : curr.path + '\\';
         return rootPath + parts.slice(1).join('\\');
       }
@@ -52,7 +52,7 @@ const App: React.FC = () => {
   // AUTO-FOCUS: Land in the target folder as soon as it arrives
   useEffect(() => {
     if (!scanPath || currentViewId || !isScanning) return;
-    
+
     // We search the treeMap for the requested folder
     for (const node of treeMap.values()) {
       if (node.kind === 'dir' && resolveNodePath(node).toLowerCase() === scanPath.toLowerCase()) {
@@ -65,7 +65,7 @@ const App: React.FC = () => {
   // Recursive stats calculator
   const { fileCount, dirCount } = React.useMemo(() => {
     if (!viewNode) return { fileCount: 0, dirCount: 0 };
-    
+
     let fCount = 0;
     let dCount = 0;
 
@@ -82,7 +82,7 @@ const App: React.FC = () => {
     // We treat the current viewNode as the root of this sub-calc
     // Note: This only counts directories/files currently in the treeMap
     viewNode.children?.forEach(traverse);
-    
+
     return { fileCount: fCount, dirCount: dCount };
   }, [viewNode]);
 
@@ -91,7 +91,7 @@ const App: React.FC = () => {
       setFolderFiles([]);
       return;
     }
-    
+
     // Instantly fetch files from the backend memory cache for the active folder
     invoke<FileNode[]>('get_folder_files', { folderId: viewNode.id, folderPath: viewNode.path || '' })
       .then(files => setFolderFiles(files))
@@ -151,7 +151,7 @@ const App: React.FC = () => {
         } else if (targetId === null || targetId === rootNode?.id) {
           setNavigationHistory([]);
         }
-        
+
         setCurrentViewId(targetId);
         break;
       }
@@ -171,7 +171,7 @@ const App: React.FC = () => {
   // Hybrid Progress Logic
   let progressPercent: number | null = null;
   let progressLabel = 'Scanning...';
-  
+
   if (progress?.totalRecords && progress?.processedRecords) {
     // Case 1: MFT (accurate count)
     progressPercent = Math.min(100, Math.round((progress.processedRecords / progress.totalRecords) * 100));
@@ -201,11 +201,10 @@ const App: React.FC = () => {
           <button
             onClick={handleScan}
             disabled={isScanning}
-            className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-semibold transition-all shadow-lg ${
-              isScanning 
-                ? 'bg-gray-800 text-gray-500 cursor-not-allowed border border-gray-700' 
+            className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-semibold transition-all shadow-lg ${isScanning
+                ? 'bg-gray-800 text-gray-500 cursor-not-allowed border border-gray-700'
                 : 'bg-emerald-600 hover:bg-emerald-500 active:scale-[0.98] text-white shadow-emerald-700/20'
-            }`}
+              }`}
           >
             <span className="text-lg">{isScanning ? '⏳' : '🔍'}</span>
             <span>{isScanning ? 'Working...' : 'Scan Folder'}</span>
@@ -245,30 +244,30 @@ const App: React.FC = () => {
           )}
           {viewNode && (
             <div className="flex-1 min-w-0">
-              <Breadcrumb 
-                path={viewNodePath} 
-                onSegmentClick={handleBreadcrumbClick} 
+              <Breadcrumb
+                path={viewNodePath}
+                onSegmentClick={handleBreadcrumbClick}
               />
             </div>
           )}
         </div>
-        
+
         {/* Split View: Treemap takes primary focus, List secondary */}
         <div className="flex-1 min-h-0 flex flex-row relative pb-16">
           <div className="flex-1 min-w-0 relative">
-            <TreemapCanvas 
-              viewRoot={viewNode || null} 
-              onNodeClick={handleDirClick} 
-              viewFiles={folderFiles} 
+            <TreemapCanvas
+              viewRoot={viewNode || null}
+              onNodeClick={handleDirClick}
+              viewFiles={folderFiles}
               viewPath={viewNodePath}
             />
           </div>
           {/* File List conditionally renders if not scanning and has root */}
           {!isScanning && viewNode && (
             <div className="w-1/3 min-w-[300px] max-w-[500px] h-full relative z-10 shrink-0 shadow-2xl">
-              <FileList 
-                files={folderFiles} 
-                parentSize={viewNode.size || 0} 
+              <FileList
+                files={folderFiles}
+                parentSize={viewNode.size || 0}
                 fileCount={fileCount}
                 dirCount={dirCount}
               />
@@ -289,10 +288,10 @@ const App: React.FC = () => {
                 </span>
                 <span className="text-gray-800 shrink-0">|</span>
                 <span className="text-gray-500 truncate font-mono italic" title={progress?.currentPath}>
-                   {isScanning ? (progress?.currentPath || 'Initializing stream...') : `Processed ${formatCount(progress?.scanned || 0)} objects`}
+                  {isScanning ? (progress?.currentPath || 'Initializing stream...') : `Processed ${formatCount(progress?.scanned || 0)} objects`}
                 </span>
               </div>
-              
+
               <div className="flex gap-4 shrink-0 font-mono">
                 <div className="text-right">
                   <p className="text-gray-600 uppercase text-[8px] font-black leading-none mb-0.5">Objects</p>
@@ -311,9 +310,9 @@ const App: React.FC = () => {
 
             {isScanning && (
               <div className="w-full h-1 bg-gray-800 rounded-full overflow-hidden relative">
-                <div 
+                <div
                   className={`absolute inset-y-0 left-0 bg-gradient-to-r from-emerald-600 to-emerald-400 rounded-full transition-all duration-700 ease-in-out shadow-[0_0_12px_rgba(16,185,129,0.5)] ${!progressPercent ? 'animate-progress-indeterminate' : ''}`}
-                  style={{ 
+                  style={{
                     width: progressPercent ? `${progressPercent}%` : '40%',
                   }}
                 />
