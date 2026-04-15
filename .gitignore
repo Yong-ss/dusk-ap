@@ -1,46 +1,52 @@
-# Logs
-logs
-*.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
-lerna-debug.log*
+# --- Dependencies ---
+node_modules/
+dist/
+dist-ssr/
+*.tsbuildinfo
 
-node_modules
-dist
-dist-ssr
+# --- Tauri / Rust ---
+src-tauri/target/
+src-tauri/gen/
+src-tauri/bin/
+target/
+
+# --- Environment & Secrets ---
+.env
+.env.*
+!.env.example
 *.local
 
-# Editor directories and files
+# --- Editor & OS ---
 .vscode/*
 !.vscode/extensions.json
-.idea
-.claude
+!.vscode/launch.json
+!.vscode/tasks.json
+.idea/
+.claude/
 .DS_Store
+Thumbs.db
 *.suo
 *.ntvs*
 *.njsproj
 *.sln
 *.sw?
 
-# Local environment files
-.env
-.env.*
-!.env.example
-coverage
-*.tsbuildinfo
-temp_work
+# --- Testing & Logs ---
+coverage/
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
 
-# Tauri / Rust build artifacts mirrored at repo root for safety
-src-tauri/target
-src-tauri/gen/schemas
+# --- Local Project Utility & Work ---
+temp_work/
+run.bat
 
-# Extra
+# --- Project Planning & Logs (Local Only) ---
 diskmap-master-plan.md
 AGENT_HANDOFF.md
 dusk-testing-plan.md
 test_fix_log.md
 test-report.md
 manual_testing_checklist.md
-run.bat
